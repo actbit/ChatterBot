@@ -1,4 +1,5 @@
 using ChatterBot.Abstractions;
+using ChatterBot.Plugins;
 using ChatterBot.Services;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
@@ -24,6 +25,11 @@ class Program
         var openaiModelId = GetConfigValue(configuration, "OpenAI:ModelId", "OPENAI_MODEL_ID");
         var openaiApiKey = GetConfigValue(configuration, "OpenAI:ApiKey", "OPENAI_API_KEY");
         var openaiEndpoint = GetConfigValue(configuration, "OpenAI:Endpoint", "OPENAI_ENDPOINT");
+
+        // Vision設定
+        var visionModelId = GetConfigValue(configuration, "Vision:ModelId", "VISION_MODEL_ID");
+        var visionApiKey = GetConfigValue(configuration, "Vision:ApiKey", "VISION_API_KEY");
+        var visionEndpoint = GetConfigValue(configuration, "Vision:Endpoint", "VISION_ENDPOINT");
 
         var embeddingProvider = GetConfigValue(configuration, "Embedding:Provider", "EMBEDDING_PROVIDER");
         var embeddingModelId = GetConfigValue(configuration, "Embedding:ModelId", "EMBEDDING_MODEL_ID");
@@ -92,6 +98,16 @@ class Program
                 embeddingEndpoint ?? "https://open.bigmodel.cn/api/paas/v4/");
         }
 
+        // Vision Pluginの作成（オプション）
+        ImageReaderPlugin? imageReaderPlugin = null;
+        if (!string.IsNullOrEmpty(visionApiKey))
+        {
+            imageReaderPlugin = new ImageReaderPlugin(
+                visionModelId ?? "gpt-4o",
+                visionApiKey,
+                visionEndpoint ?? "https://api.openai.com/v1");
+        }
+
         // サービス登録
         services.AddSingleton<IChatHistoryManager>(sp =>
             new ChatHistoryManager(databasePath, chatHistoryMaxMessages));
@@ -112,7 +128,8 @@ class Program
                 ragStore,
                 systemPrompt,
                 defaultLoadDays,
-                logger);
+                logger,
+                imageReaderPlugin);
         });
 
         services.AddSingleton<DiscordBotService>(sp =>
@@ -196,11 +213,12 @@ class Program
         - 過去の話題を思い出したい → search_history(検索クエリ, 日数)
         - 今の時間を知りたい → get_current_time() / get_time() / get_date()
         - URLの内容を読みたい → read_url(URL)
+        - 画像を見たい → describe_image(画像URL)
 
         注意:
         - 質問されたとき以外は、無理に丁寧に答えようとしなくていい
         - 「AIとして」「アシスタントとして」といった説明は不要
-        - URLが貼られたら、その内容を読んでコメントする
+        - URLや画像が貼られたら、その内容を見てコメントする
         """;
 }
 
