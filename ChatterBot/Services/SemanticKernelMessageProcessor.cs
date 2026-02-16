@@ -16,6 +16,7 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
     private readonly IChatCompletionService _chatCompletion;
     private readonly IChatHistoryManager _historyManager;
     private readonly IRagHistoryStore _ragStore;
+    private readonly ImageReaderPlugin? _imageReaderPlugin;
     private readonly string _systemPrompt;
     private readonly int _defaultLoadDays;
     private readonly ILogger<SemanticKernelMessageProcessor> _logger;
@@ -26,7 +27,8 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
         IRagHistoryStore ragStore,
         string systemPrompt,
         int defaultLoadDays,
-        ILogger<SemanticKernelMessageProcessor> logger)
+        ILogger<SemanticKernelMessageProcessor> logger,
+        ImageReaderPlugin? imageReaderPlugin = null)
     {
         _kernel = kernel;
         _chatCompletion = kernel.GetRequiredService<IChatCompletionService>();
@@ -35,6 +37,7 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
         _systemPrompt = systemPrompt;
         _defaultLoadDays = defaultLoadDays;
         _logger = logger;
+        _imageReaderPlugin = imageReaderPlugin;
     }
 
     public async Task<ProcessResult> ProcessAsync(string content, MessageContext context)
@@ -67,6 +70,12 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
             pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(historySearchPlugin, "HistorySearchPlugin"));
             pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(timePlugin, "TimePlugin"));
             pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(urlReaderPlugin, "UrlReaderPlugin"));
+
+            // 画像読み込みプラグイン（オプション）
+            if (_imageReaderPlugin != null)
+            {
+                pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(_imageReaderPlugin, "ImageReaderPlugin"));
+            }
 
             // ChatHistoryのコピーを作成してシステムプロンプトを追加
             var fullHistory = new ChatHistory();
