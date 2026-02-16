@@ -18,12 +18,31 @@ public interface IRagHistoryStore
     Task StoreAsync(ulong? guildId, ulong channelId, ulong userId, string userName, string role, string content);
 
     /// <summary>
+    /// メッセージを更新する（編集時）
+    /// </summary>
+    Task UpdateAsync(ulong? guildId, ulong channelId, ulong userId, string oldContent, string newContent);
+
+    /// <summary>
+    /// チャンネル情報とメンバーを更新する
+    /// </summary>
+    Task UpdateChannelInfoAsync(ulong? guildId, ulong channelId, bool isPublic, IReadOnlyList<ulong> memberIds);
+
+    /// <summary>
     /// 過去の会話を検索する
     /// </summary>
+    /// <param name="query">検索クエリ</param>
+    /// <param name="currentGuildId">現在のギルドID</param>
+    /// <param name="currentChannelId">現在のチャンネルID</param>
+    /// <param name="isCurrentChannelPublic">現在のチャンネルがPublicかどうか</param>
+    /// <param name="currentMemberIds">現在のチャンネルのメンバーID一覧</param>
+    /// <param name="days">検索期間（日数）</param>
+    /// <param name="limit">最大件数</param>
     Task<IReadOnlyList<HistoryRecord>> SearchAsync(
         string query,
-        ulong? guildId,
-        ulong? channelId,
+        ulong? currentGuildId,
+        ulong? currentChannelId,
+        bool isCurrentChannelPublic,
+        IReadOnlyList<ulong> currentMemberIds,
         int? days,
         int limit);
 

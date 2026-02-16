@@ -23,6 +23,11 @@ public interface IChatHistoryManager
     Task AddAssistantMessageAsync(ulong? guildId, ulong channelId, string content);
 
     /// <summary>
+    /// ユーザーメッセージを更新する（編集時）
+    /// </summary>
+    Task UpdateUserMessageAsync(ulong? guildId, ulong channelId, ulong userId, string userName, string newContent, string oldContent);
+
+    /// <summary>
     /// 直近N日分の履歴を読み込む
     /// </summary>
     Task LoadRecentHistoryAsync(ulong? guildId, ulong channelId, int days);

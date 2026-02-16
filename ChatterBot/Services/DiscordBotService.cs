@@ -15,6 +15,8 @@ public class DiscordBotService : IDisposable
 {
     private readonly DiscordSocketClient _client;
     private readonly IMessageProcessor _messageProcessor;
+    private readonly IChatHistoryManager _historyManager;
+    private readonly IRagHistoryStore _ragStore;
     private readonly string _discordToken;
     private readonly ILogger<DiscordBotService> _logger;
 
@@ -23,10 +25,14 @@ public class DiscordBotService : IDisposable
 
     public DiscordBotService(
         IMessageProcessor messageProcessor,
+        IChatHistoryManager historyManager,
+        IRagHistoryStore ragStore,
         string discordToken,
         ILogger<DiscordBotService> logger)
     {
         _messageProcessor = messageProcessor;
+        _historyManager = historyManager;
+        _ragStore = ragStore;
         _discordToken = discordToken;
         _logger = logger;
 
@@ -42,6 +48,7 @@ public class DiscordBotService : IDisposable
         _client = new DiscordSocketClient(config);
         _client.Log += LogAsync;
         _client.MessageReceived += MessageReceivedAsync;
+        _client.MessageUpdated += MessageUpdatedAsync;
         _client.Ready += ReadyAsync;
     }
 
@@ -78,9 +85,32 @@ public class DiscordBotService : IDisposable
 
         // Guild/DMの情報を取得
         ulong? guildId = null;
+        bool isChannelPublic = true;
+        IReadOnlyList<ulong> memberIds = MessageContext.EmptyMemberIds;
+
         if (channel is SocketGuildChannel guildChannel)
         {
             guildId = guildChannel.Guild.Id;
+
+            // チャンネルの公開/非公開を判定
+            if (channel is SocketTextChannel textChannel)
+            {
+                // @everyone ロールがReadMessages権限を持っていればPublic
+                var everyonePermissions = textChannel.GetPermissionOverwrite(guildChannel.Guild.EveryoneRole);
+                isChannelPublic = everyonePermissions == null ||
+                                   everyonePermissions.Value.ViewChannel != PermValue.Deny;
+
+                // メンバーIDのリストを取得
+                memberIds = textChannel.Users.Select(u => u.Id).ToList();
+            }
+
+            // チャンネル情報をRAGストアに保存
+            await _ragStore.UpdateChannelInfoAsync(guildId, channel.Id, isChannelPublic, memberIds);
+        }
+        else if (channel is SocketDMChannel dmChannel)
+        {
+            // DMの場合は自分と相手
+            memberIds = new[] { _client.CurrentUser.Id, dmChannel.Recipient.Id };
         }
 
         // ユーザー名をキャッシュに追加（メンション変換用）
@@ -93,7 +123,9 @@ public class DiscordBotService : IDisposable
             message.Author.Id,
             message.Author.Username,
             channel.Id,
-            guildId
+            guildId,
+            isChannelPublic,
+            memberIds
         );
 
         try
@@ -110,6 +142,61 @@ public class DiscordBotService : IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing message from {Username}", message.Author.Username);
+        }
+    }
+
+    private async Task MessageUpdatedAsync(Cacheable<IMessage, ulong> before, SocketMessage after, ISocketMessageChannel channel)
+    {
+        // Bot自身のメッセージは無視
+        if (after.Author.Id == _client.CurrentUser.Id)
+            return;
+
+        // システムメッセージは無視
+        if (after is not SocketUserMessage)
+            return;
+
+        var beforeMessage = await before.GetOrDownloadAsync();
+        if (beforeMessage == null)
+            return;
+
+        // 内容が変わっていない場合は無視
+        if (beforeMessage.Content == after.Content)
+            return;
+
+        // Guild/DMの情報を取得
+        ulong? guildId = null;
+        if (channel is SocketGuildChannel guildChannel)
+        {
+            guildId = guildChannel.Guild.Id;
+        }
+
+        var userName = after.Author.GlobalName ?? after.Author.Username;
+
+        try
+        {
+            // 履歴を更新
+            await _historyManager.UpdateUserMessageAsync(
+                guildId,
+                channel.Id,
+                after.Author.Id,
+                userName,
+                after.Content,
+                beforeMessage.Content);
+
+            // RAGストアも更新
+            await _ragStore.UpdateAsync(
+                guildId,
+                channel.Id,
+                after.Author.Id,
+                beforeMessage.Content,
+                after.Content);
+
+            _logger.LogInformation("Message updated by {Username}: \"{Old}\" -> \"{New}\"",
+                userName, beforeMessage.Content, after.Content);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating message history for {Username}", userName);
         }
     }
 

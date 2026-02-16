@@ -62,7 +62,7 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
 
             // プラグインをインスタンス化して登録
             var replyPlugin = new ReplyPlugin(decisionSource);
-            var historySearchPlugin = new HistorySearchPlugin(_ragStore, context.GuildId, context.ChannelId);
+            var historySearchPlugin = new HistorySearchPlugin(_ragStore, context.GuildId, context.ChannelId, context.IsChannelPublic, context.MemberIds);
             var timePlugin = new TimePlugin();
             var urlReaderPlugin = new UrlReaderPlugin();
             var mathPlugin = new MathPlugin();

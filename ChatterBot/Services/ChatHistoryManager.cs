@@ -123,6 +123,36 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
         await Task.CompletedTask;
     }
 
+    public async Task UpdateUserMessageAsync(ulong? guildId, ulong channelId, ulong userId, string userName, string newContent, string oldContent)
+    {
+        var key = GetHistoryKey(guildId, channelId);
+
+        lock (_lock)
+        {
+            if (_histories.TryGetValue(key, out var history))
+            {
+                // メモリ上のChatHistoryで該当メッセージを探して更新
+                for (int i = history.Count - 1; i >= 0; i--)
+                {
+                    var msg = history[i];
+                    if (msg.Role == AuthorRole.User &&
+                        msg.AuthorName == userName &&
+                        msg.Content == oldContent)
+                    {
+                        // 内容を更新
+                        history[i] = new ChatMessageContent(AuthorRole.User, newContent) { AuthorName = userName };
+                        break;
+                    }
+                }
+
+                // DBも更新
+                UpdateInDatabaseAsync(guildId, channelId, userId, oldContent, newContent).GetAwaiter().GetResult();
+            }
+        }
+
+        await Task.CompletedTask;
+    }
+
     private void TrimHistoryIfNeeded(ChatHistory history)
     {
         while (history.Count >= _maxMessages)
@@ -197,6 +227,27 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
         command.Parameters.AddWithValue("$userName", userName);
         command.Parameters.AddWithValue("$role", role);
         command.Parameters.AddWithValue("$content", content);
+
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task UpdateInDatabaseAsync(ulong? guildId, ulong channelId, ulong userId, string oldContent, string newContent)
+    {
+        var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE chat_messages
+            SET content = $newContent
+            WHERE channel_id = $channelId
+              AND ($guildId IS NULL AND guild_id IS NULL OR guild_id = $guildId)
+              AND user_id = $userId
+              AND content = $oldContent
+            """;
+
+        command.Parameters.AddWithValue("$guildId", guildId.HasValue ? (long)guildId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$channelId", (long)channelId);
+        command.Parameters.AddWithValue("$userId", (long)userId);
+        command.Parameters.AddWithValue("$oldContent", oldContent);
+        command.Parameters.AddWithValue("$newContent", newContent);
 
         await command.ExecuteNonQueryAsync();
     }

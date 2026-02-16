@@ -12,12 +12,16 @@ public class HistorySearchPlugin
     private readonly IRagHistoryStore _ragStore;
     private readonly ulong? _guildId;
     private readonly ulong _channelId;
+    private readonly bool _isChannelPublic;
+    private readonly IReadOnlyList<ulong> _memberIds;
 
-    public HistorySearchPlugin(IRagHistoryStore ragStore, ulong? guildId, ulong channelId)
+    public HistorySearchPlugin(IRagHistoryStore ragStore, ulong? guildId, ulong channelId, bool isChannelPublic, IReadOnlyList<ulong> memberIds)
     {
         _ragStore = ragStore;
         _guildId = guildId;
         _channelId = channelId;
+        _isChannelPublic = isChannelPublic;
+        _memberIds = memberIds ?? MessageContext.EmptyMemberIds;
     }
 
     [KernelFunction("search_history")]
@@ -27,7 +31,7 @@ public class HistorySearchPlugin
         [Description("検索期間（日数）。指定なしで全期間検索")] int? days = null,
         [Description("最大取得件数")] int limit = 5)
     {
-        var results = await _ragStore.SearchAsync(query, _guildId, _channelId, days, limit);
+        var results = await _ragStore.SearchAsync(query, _guildId, _channelId, _isChannelPublic, _memberIds, days, limit);
 
         if (results.Count == 0)
         {

@@ -15,8 +15,16 @@ public record MessageContext(
     ulong UserId,
     string UserName,
     ulong ChannelId,
-    ulong? GuildId
-);
+    ulong? GuildId,
+    bool IsChannelPublic = true,
+    IReadOnlyList<ulong> MemberIds = null!
+)
+{
+    /// <summary>
+    /// デフォルトの空メンバーリスト
+    /// </summary>
+    public static readonly IReadOnlyList<ulong> EmptyMemberIds = Array.Empty<ulong>();
+}
 
 /// <summary>
 /// 履歴レコード
