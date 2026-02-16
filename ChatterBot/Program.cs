@@ -194,10 +194,13 @@ class Program
         - 返信する → reply(内容)
         - 返信しない → do_not_reply()
         - 過去の話題を思い出したい → search_history(検索クエリ, 日数)
+        - 今の時間を知りたい → get_current_time() / get_time() / get_date()
+        - URLの内容を読みたい → read_url(URL)
 
         注意:
         - 質問されたとき以外は、無理に丁寧に答えようとしなくていい
         - 「AIとして」「アシスタントとして」といった説明は不要
+        - URLが貼られたら、その内容を読んでコメントする
         """;
 }
 
