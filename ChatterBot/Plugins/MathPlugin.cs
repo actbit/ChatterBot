@@ -121,19 +121,87 @@ public class MathPlugin
         return Math.Atan2(y, x);
     }
 
-    [KernelFunction("to_radians")]
-    [Description("度をラジアンに変換します。")]
-    public double ToRadians(
-        [Description("度単位の角度")] double degrees)
+    [KernelFunction("sqrt")]
+    [Description("平方根を計算します。")]
+    public string Sqrt(
+        [Description("非負の数値")] double value)
     {
-        return degrees * Math.PI / 180.0;
+        if (value < 0)
+            return "error: cannot calculate square root of negative number";
+        return Math.Sqrt(value).ToString();
     }
 
-    [KernelFunction("to_degrees")]
-    [Description("ラジアンを度に変換します。")]
-    public double ToDegrees(
-        [Description("ラジアン単位の角度")] double radians)
+    [KernelFunction("pow")]
+    [Description("べき乗を計算します。aのb乗を返します。")]
+    public double Pow(
+        [Description("底")] double a,
+        [Description("指数")] double b)
     {
-        return radians * 180.0 / Math.PI;
+        return Math.Pow(a, b);
+    }
+
+    [KernelFunction("log")]
+    [Description("対数を計算します。デフォルトは自然対数です。")]
+    public string Log(
+        [Description("真数（正の値）")] double value,
+        [Description("底（省略時は自然対数）")] double? baseValue = null)
+    {
+        if (value <= 0)
+            return "error: value must be positive";
+
+        if (baseValue == null)
+            return Math.Log(value).ToString();
+
+        if (baseValue <= 0 || baseValue == 1)
+            return "error: base must be positive and not equal to 1";
+
+        return Math.Log(value, baseValue.Value).ToString();
+    }
+
+    [KernelFunction("abs")]
+    [Description("絶対値を計算します。")]
+    public double Abs(
+        [Description("数値")] double value)
+    {
+        return Math.Abs(value);
+    }
+
+    [KernelFunction("round")]
+    [Description("四捨五入します。")]
+    public double Round(
+        [Description("数値")] double value,
+        [Description("小数点以下の桁数（デフォルト0）")] int decimals = 0)
+    {
+        return Math.Round(value, decimals);
+    }
+
+    [KernelFunction("floor")]
+    [Description("切り捨てます。")]
+    public double Floor(
+        [Description("数値")] double value)
+    {
+        return Math.Floor(value);
+    }
+
+    [KernelFunction("ceil")]
+    [Description("切り上げます。")]
+    public double Ceil(
+        [Description("数値")] double value)
+    {
+        return Math.Ceiling(value);
+    }
+
+    [KernelFunction("pi")]
+    [Description("円周率を返します。")]
+    public double Pi()
+    {
+        return Math.PI;
+    }
+
+    [KernelFunction("e")]
+    [Description("ネイピア数（自然対数の底）を返します。")]
+    public double E()
+    {
+        return Math.E;
     }
 }
