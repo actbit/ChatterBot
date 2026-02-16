@@ -63,6 +63,8 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
 
             pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(replyPlugin, "ReplyPlugin"));
             pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(historySearchPlugin, "HistorySearchPlugin"));
+            pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(timePlugin, "TimePlugin"));
+            pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(urlReaderPlugin, "UrlReaderPlugin"));
 
             // ChatHistoryのコピーを作成してシステムプロンプトを追加
             var fullHistory = new ChatHistory();
