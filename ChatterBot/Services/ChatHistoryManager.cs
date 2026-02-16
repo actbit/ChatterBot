@@ -1,5 +1,6 @@
 using ChatterBot.Abstractions;
 using Microsoft.Data.Sqlite;
+using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 
 namespace ChatterBot.Services;
@@ -93,7 +94,7 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
             if (_histories.TryGetValue(key, out var history))
             {
                 TrimHistoryIfNeeded(history);
-                history.AddUserMessage(content);
+                history.Add(new ChatMessageContent(AuthorRole.User, content) { AuthorName = userName });
 
                 // 同時にRAG Storeにも保存するために、DBに直接保存
                 SaveToDatabaseAsync(guildId, channelId, userId, userName, "user", content).GetAwaiter().GetResult();
@@ -173,7 +174,7 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
 
             if (role == "user")
             {
-                history.AddUserMessage(content);
+                history.Add(new ChatMessageContent(AuthorRole.User, content) { AuthorName = userName });
             }
             else
             {
