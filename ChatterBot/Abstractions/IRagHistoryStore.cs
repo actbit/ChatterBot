@@ -3,7 +3,7 @@ using ChatterBot.Abstractions;
 namespace ChatterBot.Abstractions;
 
 /// <summary>
-/// RAG履歴ストアインターフェース（永続化・履歴は削除しない）
+/// RAG履歴ストアインターフェース
 /// </summary>
 public interface IRagHistoryStore
 {
@@ -15,12 +15,27 @@ public interface IRagHistoryStore
     /// <summary>
     /// メッセージを保存する
     /// </summary>
-    Task StoreAsync(ulong? guildId, ulong channelId, ulong userId, string userName, string role, string content);
+    Task StoreAsync(ulong? guildId, ulong channelId, ulong messageId, ulong userId, string userName, string role, string content);
 
     /// <summary>
     /// メッセージを更新する（編集時）
     /// </summary>
-    Task UpdateAsync(ulong? guildId, ulong channelId, ulong userId, string oldContent, string newContent);
+    Task UpdateAsync(ulong messageId, string newContent);
+
+    /// <summary>
+    /// メッセージを削除する
+    /// </summary>
+    Task DeleteMessageAsync(ulong messageId);
+
+    /// <summary>
+    /// チャンネルの全履歴を削除する
+    /// </summary>
+    Task DeleteChannelAsync(ulong channelId);
+
+    /// <summary>
+    /// ギルドの全履歴を削除する
+    /// </summary>
+    Task DeleteGuildAsync(ulong guildId);
 
     /// <summary>
     /// チャンネル情報とメンバーを更新する
@@ -30,13 +45,6 @@ public interface IRagHistoryStore
     /// <summary>
     /// 過去の会話を検索する
     /// </summary>
-    /// <param name="query">検索クエリ</param>
-    /// <param name="currentGuildId">現在のギルドID</param>
-    /// <param name="currentChannelId">現在のチャンネルID</param>
-    /// <param name="isCurrentChannelPublic">現在のチャンネルがPublicかどうか</param>
-    /// <param name="currentMemberIds">現在のチャンネルのメンバーID一覧</param>
-    /// <param name="days">検索期間（日数）</param>
-    /// <param name="limit">最大件数</param>
     Task<IReadOnlyList<HistoryRecord>> SearchAsync(
         string query,
         ulong? currentGuildId,

@@ -15,17 +15,27 @@ public interface IChatHistoryManager
     /// <summary>
     /// ユーザーメッセージを追加する
     /// </summary>
-    Task AddUserMessageAsync(ulong? guildId, ulong channelId, ulong userId, string userName, string content);
+    Task AddUserMessageAsync(ulong? guildId, ulong channelId, ulong messageId, ulong userId, string userName, string content);
 
     /// <summary>
     /// アシスタントメッセージを追加する
     /// </summary>
-    Task AddAssistantMessageAsync(ulong? guildId, ulong channelId, string content);
+    Task AddAssistantMessageAsync(ulong? guildId, ulong channelId, ulong messageId, string content);
 
     /// <summary>
     /// ユーザーメッセージを更新する（編集時）
     /// </summary>
-    Task UpdateUserMessageAsync(ulong? guildId, ulong channelId, ulong userId, string userName, string newContent, string oldContent);
+    Task UpdateUserMessageAsync(ulong messageId, string userName, string newContent);
+
+    /// <summary>
+    /// ユーザーメッセージを削除する
+    /// </summary>
+    Task DeleteUserMessageAsync(ulong messageId);
+
+    /// <summary>
+    /// チャンネルの全履歴を削除する
+    /// </summary>
+    Task DeleteChannelAsync(ulong? guildId, ulong channelId);
 
     /// <summary>
     /// 直近N日分の履歴を読み込む

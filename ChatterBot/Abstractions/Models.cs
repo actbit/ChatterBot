@@ -12,6 +12,7 @@ public record ProcessResult(
 /// メッセージのコンテキスト情報
 /// </summary>
 public record MessageContext(
+    ulong MessageId,
     ulong UserId,
     string UserName,
     ulong ChannelId,

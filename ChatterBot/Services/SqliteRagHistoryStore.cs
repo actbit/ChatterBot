@@ -35,6 +35,7 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
         command.CommandText = """
             CREATE TABLE IF NOT EXISTS chat_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL,
                 guild_id INTEGER,
                 channel_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -57,6 +58,8 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
                 PRIMARY KEY (channel_id, user_id)
             );
 
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_message_id
+                ON chat_messages(message_id);
             CREATE INDEX IF NOT EXISTS idx_chat_messages_guild_channel
                 ON chat_messages(guild_id, channel_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_chat_messages_channel
@@ -110,7 +113,7 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
         }
     }
 
-    public async Task StoreAsync(ulong? guildId, ulong channelId, ulong userId, string userName, string role, string content)
+    public async Task StoreAsync(ulong? guildId, ulong channelId, ulong messageId, ulong userId, string userName, string role, string content)
     {
         byte[]? embeddingBytes = null;
 
@@ -129,10 +132,11 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
 
         var command = _connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO chat_messages (guild_id, channel_id, user_id, user_name, role, content, embedding)
-            VALUES ($guildId, $channelId, $userId, $userName, $role, $content, $embedding)
+            INSERT INTO chat_messages (message_id, guild_id, channel_id, user_id, user_name, role, content, embedding)
+            VALUES ($messageId, $guildId, $channelId, $userId, $userName, $role, $content, $embedding)
             """;
 
+        command.Parameters.AddWithValue("$messageId", (long)messageId);
         command.Parameters.AddWithValue("$guildId", guildId.HasValue ? (long)guildId.Value : DBNull.Value);
         command.Parameters.AddWithValue("$channelId", (long)channelId);
         command.Parameters.AddWithValue("$userId", (long)userId);
@@ -144,7 +148,7 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
         await command.ExecuteNonQueryAsync();
     }
 
-    public async Task UpdateAsync(ulong? guildId, ulong channelId, ulong userId, string oldContent, string newContent)
+    public async Task UpdateAsync(ulong messageId, string newContent)
     {
         byte[]? embeddingBytes = null;
 
@@ -165,20 +169,67 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
         command.CommandText = """
             UPDATE chat_messages
             SET content = $newContent, embedding = $embedding
-            WHERE channel_id = $channelId
-              AND ($guildId IS NULL AND guild_id IS NULL OR guild_id = $guildId)
-              AND user_id = $userId
-              AND content = $oldContent
+            WHERE message_id = $messageId
             """;
 
-        command.Parameters.AddWithValue("$guildId", guildId.HasValue ? (long)guildId.Value : DBNull.Value);
-        command.Parameters.AddWithValue("$channelId", (long)channelId);
-        command.Parameters.AddWithValue("$userId", (long)userId);
-        command.Parameters.AddWithValue("$oldContent", oldContent);
+        command.Parameters.AddWithValue("$messageId", (long)messageId);
         command.Parameters.AddWithValue("$newContent", newContent);
         command.Parameters.AddWithValue("$embedding", embeddingBytes != null ? embeddingBytes : DBNull.Value);
 
         await command.ExecuteNonQueryAsync();
+    }
+
+    public async Task DeleteMessageAsync(ulong messageId)
+    {
+        var command = _connection.CreateCommand();
+        command.CommandText = "DELETE FROM chat_messages WHERE message_id = $messageId";
+        command.Parameters.AddWithValue("$messageId", (long)messageId);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    public async Task DeleteChannelAsync(ulong channelId)
+    {
+        // メッセージ削除
+        var deleteMessages = _connection.CreateCommand();
+        deleteMessages.CommandText = "DELETE FROM chat_messages WHERE channel_id = $channelId";
+        deleteMessages.Parameters.AddWithValue("$channelId", (long)channelId);
+        await deleteMessages.ExecuteNonQueryAsync();
+
+        // チャンネル情報削除
+        var deleteChannelInfo = _connection.CreateCommand();
+        deleteChannelInfo.CommandText = "DELETE FROM channel_info WHERE channel_id = $channelId";
+        deleteChannelInfo.Parameters.AddWithValue("$channelId", (long)channelId);
+        await deleteChannelInfo.ExecuteNonQueryAsync();
+
+        // チャンネルメンバー削除
+        var deleteMembers = _connection.CreateCommand();
+        deleteMembers.CommandText = "DELETE FROM channel_members WHERE channel_id = $channelId";
+        deleteMembers.Parameters.AddWithValue("$channelId", (long)channelId);
+        await deleteMembers.ExecuteNonQueryAsync();
+    }
+
+    public async Task DeleteGuildAsync(ulong guildId)
+    {
+        // ギルドのメッセージ削除
+        var deleteMessages = _connection.CreateCommand();
+        deleteMessages.CommandText = "DELETE FROM chat_messages WHERE guild_id = $guildId";
+        deleteMessages.Parameters.AddWithValue("$guildId", (long)guildId);
+        await deleteMessages.ExecuteNonQueryAsync();
+
+        // ギルドのチャンネル情報削除
+        var deleteChannelInfo = _connection.CreateCommand();
+        deleteChannelInfo.CommandText = "DELETE FROM channel_info WHERE guild_id = $guildId";
+        deleteChannelInfo.Parameters.AddWithValue("$guildId", (long)guildId);
+        await deleteChannelInfo.ExecuteNonQueryAsync();
+
+        // ギルドのチャンネルメンバー削除（サブクエリで削除）
+        var deleteMembers = _connection.CreateCommand();
+        deleteMembers.CommandText = """
+            DELETE FROM channel_members
+            WHERE channel_id IN (SELECT channel_id FROM channel_info WHERE guild_id = $guildId)
+            """;
+        deleteMembers.Parameters.AddWithValue("$guildId", (long)guildId);
+        await deleteMembers.ExecuteNonQueryAsync();
     }
 
     public async Task<IReadOnlyList<HistoryRecord>> SearchAsync(

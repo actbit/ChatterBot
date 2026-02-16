@@ -41,6 +41,7 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
         command.CommandText = """
             CREATE TABLE IF NOT EXISTS chat_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL,
                 guild_id INTEGER,
                 channel_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -51,6 +52,8 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_message_id
+                ON chat_messages(message_id);
             CREATE INDEX IF NOT EXISTS idx_chat_messages_guild_channel
                 ON chat_messages(guild_id, channel_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_chat_messages_channel
@@ -85,7 +88,7 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
         }
     }
 
-    public async Task AddUserMessageAsync(ulong? guildId, ulong channelId, ulong userId, string userName, string content)
+    public async Task AddUserMessageAsync(ulong? guildId, ulong channelId, ulong messageId, ulong userId, string userName, string content)
     {
         var key = GetHistoryKey(guildId, channelId);
 
@@ -97,14 +100,14 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
                 history.Add(new ChatMessageContent(AuthorRole.User, content) { AuthorName = userName });
 
                 // 同時にRAG Storeにも保存するために、DBに直接保存
-                SaveToDatabaseAsync(guildId, channelId, userId, userName, "user", content).GetAwaiter().GetResult();
+                SaveToDatabaseAsync(guildId, channelId, messageId, userId, userName, "user", content).GetAwaiter().GetResult();
             }
         }
 
         await Task.CompletedTask;
     }
 
-    public async Task AddAssistantMessageAsync(ulong? guildId, ulong channelId, string content)
+    public async Task AddAssistantMessageAsync(ulong? guildId, ulong channelId, ulong messageId, string content)
     {
         var key = GetHistoryKey(guildId, channelId);
 
@@ -116,41 +119,38 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
                 history.AddAssistantMessage(content);
 
                 // アシスタントメッセージも保存
-                SaveToDatabaseAsync(guildId, channelId, 0, "ChatterBot", "assistant", content).GetAwaiter().GetResult();
+                SaveToDatabaseAsync(guildId, channelId, messageId, 0, "ChatterBot", "assistant", content).GetAwaiter().GetResult();
             }
         }
 
         await Task.CompletedTask;
     }
 
-    public async Task UpdateUserMessageAsync(ulong? guildId, ulong channelId, ulong userId, string userName, string newContent, string oldContent)
+    public async Task UpdateUserMessageAsync(ulong messageId, string userName, string newContent)
+    {
+        // DBを更新（message_idで特定）
+        await UpdateInDatabaseAsync(messageId, newContent);
+    }
+
+    public async Task DeleteUserMessageAsync(ulong messageId)
+    {
+        // DBから削除（message_idで特定）
+        await DeleteFromDatabaseAsync(messageId);
+    }
+
+    public async Task DeleteChannelAsync(ulong? guildId, ulong channelId)
     {
         var key = GetHistoryKey(guildId, channelId);
 
         lock (_lock)
         {
-            if (_histories.TryGetValue(key, out var history))
-            {
-                // メモリ上のChatHistoryで該当メッセージを探して更新
-                for (int i = history.Count - 1; i >= 0; i--)
-                {
-                    var msg = history[i];
-                    if (msg.Role == AuthorRole.User &&
-                        msg.AuthorName == userName &&
-                        msg.Content == oldContent)
-                    {
-                        // 内容を更新
-                        history[i] = new ChatMessageContent(AuthorRole.User, newContent) { AuthorName = userName };
-                        break;
-                    }
-                }
-
-                // DBも更新
-                UpdateInDatabaseAsync(guildId, channelId, userId, oldContent, newContent).GetAwaiter().GetResult();
-            }
+            // メモリ上の履歴を削除
+            _histories.Remove(key);
+            _loadedChannels.Remove(key);
         }
 
-        await Task.CompletedTask;
+        // DBから削除
+        await DeleteChannelFromDatabaseAsync(channelId);
     }
 
     private void TrimHistoryIfNeeded(ChatHistory history)
@@ -213,14 +213,15 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
         }
     }
 
-    private async Task SaveToDatabaseAsync(ulong? guildId, ulong channelId, ulong userId, string userName, string role, string content)
+    private async Task SaveToDatabaseAsync(ulong? guildId, ulong channelId, ulong messageId, ulong userId, string userName, string role, string content)
     {
         var command = _connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO chat_messages (guild_id, channel_id, user_id, user_name, role, content)
-            VALUES ($guildId, $channelId, $userId, $userName, $role, $content)
+            INSERT INTO chat_messages (message_id, guild_id, channel_id, user_id, user_name, role, content)
+            VALUES ($messageId, $guildId, $channelId, $userId, $userName, $role, $content)
             """;
 
+        command.Parameters.AddWithValue("$messageId", (long)messageId);
         command.Parameters.AddWithValue("$guildId", guildId.HasValue ? (long)guildId.Value : DBNull.Value);
         command.Parameters.AddWithValue("$channelId", (long)channelId);
         command.Parameters.AddWithValue("$userId", (long)userId);
@@ -231,24 +232,34 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
         await command.ExecuteNonQueryAsync();
     }
 
-    private async Task UpdateInDatabaseAsync(ulong? guildId, ulong channelId, ulong userId, string oldContent, string newContent)
+    private async Task UpdateInDatabaseAsync(ulong messageId, string newContent)
     {
         var command = _connection.CreateCommand();
         command.CommandText = """
             UPDATE chat_messages
             SET content = $newContent
-            WHERE channel_id = $channelId
-              AND ($guildId IS NULL AND guild_id IS NULL OR guild_id = $guildId)
-              AND user_id = $userId
-              AND content = $oldContent
+            WHERE message_id = $messageId
             """;
 
-        command.Parameters.AddWithValue("$guildId", guildId.HasValue ? (long)guildId.Value : DBNull.Value);
-        command.Parameters.AddWithValue("$channelId", (long)channelId);
-        command.Parameters.AddWithValue("$userId", (long)userId);
-        command.Parameters.AddWithValue("$oldContent", oldContent);
+        command.Parameters.AddWithValue("$messageId", (long)messageId);
         command.Parameters.AddWithValue("$newContent", newContent);
 
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task DeleteFromDatabaseAsync(ulong messageId)
+    {
+        var command = _connection.CreateCommand();
+        command.CommandText = "DELETE FROM chat_messages WHERE message_id = $messageId";
+        command.Parameters.AddWithValue("$messageId", (long)messageId);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task DeleteChannelFromDatabaseAsync(ulong channelId)
+    {
+        var command = _connection.CreateCommand();
+        command.CommandText = "DELETE FROM chat_messages WHERE channel_id = $channelId";
+        command.Parameters.AddWithValue("$channelId", (long)channelId);
         await command.ExecuteNonQueryAsync();
     }
 
