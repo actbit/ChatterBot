@@ -65,11 +65,13 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
             var historySearchPlugin = new HistorySearchPlugin(_ragStore, context.GuildId, context.ChannelId);
             var timePlugin = new TimePlugin();
             var urlReaderPlugin = new UrlReaderPlugin();
+            var mathPlugin = new MathPlugin();
 
             pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(replyPlugin, "ReplyPlugin"));
             pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(historySearchPlugin, "HistorySearchPlugin"));
             pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(timePlugin, "TimePlugin"));
             pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(urlReaderPlugin, "UrlReaderPlugin"));
+            pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(mathPlugin, "MathPlugin"));
 
             // 画像読み込みプラグイン（オプション）
             if (_imageReaderPlugin != null)
