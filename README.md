@@ -444,25 +444,59 @@ CREATE TABLE chat_messages (
 
 ### プラグインの追加
 
-1. `ChatterBot.Plugins` 名前空間に新しいクラスを作成
-2. `[KernelFunction]` 属性で関数を定義
-3. `SemanticKernelMessageProcessor.cs` で登録
+#### 方法1: DLLで外部プラグインを作成
+
+1. 新しいクラスライブラリプロジェクトを作成
+2. `Microsoft.SemanticKernel` を参照に追加
+3. `[KernelFunction]` 属性で関数を定義
 
 ```csharp
-// プラグイン例
+// プラグイン例 (WeatherPlugin.cs)
+using System.ComponentModel;
+using Microsoft.SemanticKernel;
+
+namespace MyPlugins;
+
 public class WeatherPlugin
 {
     [KernelFunction("get_weather")]
     [Description("指定した都市の天気を取得します")]
-    public async Task<string> GetWeather(string city)
+    public async Task<string> GetWeather(
+        [Description("都市名")] string city)
     {
         // 実装
+        return $"{city}の天気: 晴れ";
     }
 }
+```
 
-// 登録
-pluginKernel.Plugins.Add(
-    KernelPluginFactory.CreateFromObject(new WeatherPlugin(), "WeatherPlugin"));
+4. ビルドしてDLLを `plugins/` ディレクトリに配置
+5. Bot起動時に自動で読み込まれます
+
+**検出ルール**: `[KernelFunction]` 属性を持つメソッドが1つ以上ある public クラスが自動検出されます。
+
+```
+ChatterBot/
+├── plugins/
+│   └── WeatherPlugin.dll   # 自動読み込み
+├── ChatterBot.dll
+└── appsettings.json
+```
+
+#### 方法2: 内蔵プラグインを追加
+
+1. `ChatterBot.Plugins` 名前空間に新しいクラスを作成
+2. `[KernelFunction]` 属性で関数を定義
+3. `SemanticKernelMessageProcessor.cs` で登録
+
+### プラグインディレクトリ設定
+
+```json
+{
+  "Plugins": {
+    "Directory": "plugins"   // DLLを配置するディレクトリ
+  }
+}
 ```
 
 ---
@@ -502,7 +536,8 @@ ChatterBot/
     ├── DiscordBotService.cs           # Discord連携
     ├── SemanticKernelMessageProcessor.cs  # AI処理
     ├── ChatHistoryManager.cs          # 履歴管理
-    └── SqliteRagHistoryStore.cs       # RAG実装
+    ├── SqliteRagHistoryStore.cs       # RAG実装
+    └── PluginLoader.cs                # 外部プラグイン読み込み
 
 ChatterBot.Tests.Console/          # テストプロジェクト
 ├── Program.cs                    # コンテキスト認識テスト

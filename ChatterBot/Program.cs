@@ -38,6 +38,7 @@ class Program
         var embeddingEndpoint = GetConfigValue(configuration, "Embedding:Endpoint", "EMBEDDING_ENDPOINT");
 
         var databasePath = configuration["Database:Path"] ?? "data/chatterbot.db";
+        var pluginDirectory = configuration["Plugins:Directory"] ?? "plugins";
         var systemPrompt = configuration["SystemPrompt"] ?? DefaultSystemPrompt;
         var defaultLoadDays = int.Parse(configuration["History:DefaultLoadDays"] ?? "7");
         var chatHistoryMaxMessages = int.Parse(configuration["History:ChatHistoryMaxMessages"] ?? "30");
@@ -111,6 +112,11 @@ class Program
                 visionEndpoint ?? "https://api.openai.com/v1");
         }
 
+        // 外部プラグインの読み込み
+        var pluginLoggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+        var pluginLoader = new PluginLoader(pluginDirectory, pluginLoggerFactory.CreateLogger<PluginLoader>());
+        var externalPluginTypes = pluginLoader.LoadPluginTypes();
+
         // サービス登録
         services.AddSingleton<IChatHistoryManager>(sp =>
             new ChatHistoryManager(databasePath, chatHistoryMaxMessages));
@@ -133,7 +139,8 @@ class Program
                 defaultLoadDays,
                 supportsVision,
                 logger,
-                imageReaderPlugin);
+                imageReaderPlugin,
+                externalPluginTypes);
         });
 
         services.AddSingleton<DiscordBotService>(sp =>
