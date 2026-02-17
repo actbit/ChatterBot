@@ -17,6 +17,7 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
     private readonly IChatHistoryManager _historyManager;
     private readonly IRagHistoryStore _ragStore;
     private readonly ImageReaderPlugin? _imageReaderPlugin;
+    private readonly IReadOnlyList<Type> _externalPluginTypes;
     private readonly string _systemPrompt;
     private readonly int _defaultLoadDays;
     private readonly bool _supportsVision;
@@ -30,7 +31,8 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
         int defaultLoadDays,
         bool supportsVision,
         ILogger<SemanticKernelMessageProcessor> logger,
-        ImageReaderPlugin? imageReaderPlugin = null)
+        ImageReaderPlugin? imageReaderPlugin = null,
+        IReadOnlyList<Type>? externalPluginTypes = null)
     {
         _kernel = kernel;
         _chatCompletion = kernel.GetRequiredService<IChatCompletionService>();
@@ -41,6 +43,7 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
         _supportsVision = supportsVision;
         _logger = logger;
         _imageReaderPlugin = imageReaderPlugin;
+        _externalPluginTypes = externalPluginTypes ?? Array.Empty<Type>();
     }
 
     public async Task<ProcessResult> ProcessAsync(string content, MessageContext context)
@@ -85,6 +88,20 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
             if (_imageReaderPlugin != null)
             {
                 pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(_imageReaderPlugin, "ImageReaderPlugin"));
+            }
+
+            // 外部プラグイン（DLLから読み込み）
+            foreach (var pluginType in _externalPluginTypes)
+            {
+                try
+                {
+                    var pluginName = pluginType.Name;
+                    pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromType(pluginType, pluginName));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to create plugin from type: {TypeName}", pluginType.Name);
+                }
             }
 
             // ChatHistoryのコピーを作成してシステムプロンプトを追加
