@@ -27,6 +27,7 @@ class Program
         var openaiEndpoint = GetConfigValue(configuration, "OpenAI:Endpoint", "OPENAI_ENDPOINT");
 
         // Vision設定
+        var supportsVision = configuration.GetValue<bool?>("Vision:SupportsVision") ?? false;
         var visionModelId = GetConfigValue(configuration, "Vision:ModelId", "VISION_MODEL_ID");
         var visionApiKey = GetConfigValue(configuration, "Vision:ApiKey", "VISION_API_KEY");
         var visionEndpoint = GetConfigValue(configuration, "Vision:Endpoint", "VISION_ENDPOINT");
@@ -98,9 +99,11 @@ class Program
                 embeddingEndpoint ?? "https://open.bigmodel.cn/api/paas/v4/");
         }
 
-        // Vision Pluginの作成（オプション）
+        // Vision Pluginの作成
+        // SupportsVision=true の場合は直接画像を展開するためプラグイン不要
+        // SupportsVision=false + Vision設定あり のみプラグインを作成
         ImageReaderPlugin? imageReaderPlugin = null;
-        if (!string.IsNullOrEmpty(visionApiKey))
+        if (!supportsVision && !string.IsNullOrEmpty(visionApiKey))
         {
             imageReaderPlugin = new ImageReaderPlugin(
                 visionModelId ?? "gpt-4o",
@@ -128,6 +131,7 @@ class Program
                 ragStore,
                 systemPrompt,
                 defaultLoadDays,
+                supportsVision,
                 logger,
                 imageReaderPlugin);
         });
