@@ -191,8 +191,10 @@ docker run -d \
 | `EMBEDDING_PROVIDER` | | Embeddingプロバイダー | `openai`, `glm`, `none` |
 | `EMBEDDING_MODEL_ID` | | Embeddingモデル | `text-embedding-3-small` |
 | `EMBEDDING_API_KEY` | | Embedding用API Key | |
+| `Vision__SupportsVision` | | Vision対応フラグ | `true`, `false` |
 | `VISION_MODEL_ID` | | 画像認識モデル | `gpt-4o` |
 | `VISION_API_KEY` | | 画像認識用API Key | |
+| `VISION_ENDPOINT` | | 画像認識エンドポイント | |
 
 ### appsettings.json での設定
 
@@ -209,6 +211,7 @@ docker run -d \
     "Endpoint": "${OPENAI_ENDPOINT}"
   },
   "Vision": {
+    "SupportsVision": false,
     "ModelId": "${VISION_MODEL_ID}",
     "ApiKey": "${VISION_API_KEY}",
     "Endpoint": "${VISION_ENDPOINT}"
@@ -241,6 +244,45 @@ export EMBEDDING_PROVIDER="glm"
 export EMBEDDING_MODEL_ID="embedding-3"
 export EMBEDDING_API_KEY="your_glm_api_key"
 export EMBEDDING_ENDPOINT="https://open.bigmodel.cn/api/paas/v4/"
+```
+
+### 画像認識設定
+
+`SupportsVision` の設定により画像処理方法が変わります：
+
+| `SupportsVision` | Vision設定 | 画像処理 | `describe_image` tool |
+|:----------------:|:----------:|:--------:|:---------------------:|
+| `true` | 不要 | 画像を直接認識 | ❌ 無効 |
+| `false` | あり | URLを渡す、LLM判断でtool使用 | ✅ 有効 |
+| `false` | なし | 完全に無視 | ❌ 無効 |
+
+**パターン1: Vision対応モデル（GPT-4o等）**
+```json
+{
+  "OpenAI": { "ModelId": "gpt-4o" },
+  "Vision": { "SupportsVision": true }
+}
+```
+
+**パターン2: Vision非対応 + 別途Vision API**
+```json
+{
+  "OpenAI": { "ModelId": "glm-4-flash" },
+  "Vision": {
+    "SupportsVision": false,
+    "ModelId": "glm-4v",
+    "ApiKey": "your_vision_api_key",
+    "Endpoint": "https://open.bigmodel.cn/api/paas/v4/"
+  }
+}
+```
+
+**パターン3: 画像機能なし**
+```json
+{
+  "OpenAI": { "ModelId": "gpt-4" },
+  "Vision": { "SupportsVision": false }
+}
 ```
 
 ---
@@ -311,7 +353,7 @@ Botが使用できる機能（Semantic Kernel Function Calling）：
 | 関数 | 説明 |
 |------|------|
 | `read_url(url)` | URLの内容を読み込む |
-| `describe_image(url)` | 画像の内容を説明 |
+| `describe_image(url)` | 画像の内容を説明（LLM判断で呼び出し） |
 
 ---
 
@@ -576,6 +618,15 @@ dotnet run
 - 🎭 Natural conversation participation
 - 🧠 Hybrid history management (ChatHistory + RAG)
 - 🌐 OpenAI-compatible API support
+- 🖼️ Flexible image handling (direct vision or tool-based)
 - 🛠️ Rich functions: calculation, time, random, URL reading, image recognition
+
+### Image Handling
+
+| `SupportsVision` | Vision Config | Image Processing | `describe_image` tool |
+|:----------------:|:-------------:|:----------------:|:---------------------:|
+| `true` | N/A | Direct image recognition | Disabled |
+| `false` | Set | URL passed, LLM decides to use tool | Enabled |
+| `false` | Not set | Completely ignored | Disabled |
 
 See Japanese section above for detailed documentation.

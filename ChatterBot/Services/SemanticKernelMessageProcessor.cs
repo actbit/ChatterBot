@@ -19,6 +19,7 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
     private readonly ImageReaderPlugin? _imageReaderPlugin;
     private readonly string _systemPrompt;
     private readonly int _defaultLoadDays;
+    private readonly bool _supportsVision;
     private readonly ILogger<SemanticKernelMessageProcessor> _logger;
 
     public SemanticKernelMessageProcessor(
@@ -27,6 +28,7 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
         IRagHistoryStore ragStore,
         string systemPrompt,
         int defaultLoadDays,
+        bool supportsVision,
         ILogger<SemanticKernelMessageProcessor> logger,
         ImageReaderPlugin? imageReaderPlugin = null)
     {
@@ -36,6 +38,7 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
         _ragStore = ragStore;
         _systemPrompt = systemPrompt;
         _defaultLoadDays = defaultLoadDays;
+        _supportsVision = supportsVision;
         _logger = logger;
         _imageReaderPlugin = imageReaderPlugin;
     }
@@ -91,6 +94,44 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
             foreach (var message in chatHistory)
             {
                 fullHistory.Add(message);
+            }
+
+            // 画像がある場合の処理
+            if (context.ImageUrls.Count > 0)
+            {
+                if (_supportsVision)
+                {
+                    // Vision対応モデル: 画像を直接ChatHistoryに展開
+                    fullHistory.Add(new ChatMessageContent
+                    {
+                        Role = AuthorRole.User,
+                        AuthorName = context.UserName
+                    });
+
+                    var lastMessage = fullHistory[^1];
+                    lastMessage.Items.Add(new TextContent(content));
+                    foreach (var imageUrl in context.ImageUrls)
+                    {
+                        lastMessage.Items.Add(new ImageContent(new Uri(imageUrl)));
+                    }
+
+                    _logger.LogInformation("Processing message with {ImageCount} image(s) [Vision mode] from {UserName}",
+                        context.ImageUrls.Count, context.UserName);
+                }
+                else if (_imageReaderPlugin != null)
+                {
+                    // Vision非対応 + Vision設定あり: 画像URLをテキストで渡す、LLMがdescribe_image toolを使うか判断
+                    var imageUrlsText = string.Join("\n", context.ImageUrls.Select(url => $"[画像URL: {url}]"));
+                    var contentWithImageUrls = string.IsNullOrEmpty(content)
+                        ? imageUrlsText
+                        : $"{content}\n{imageUrlsText}";
+
+                    fullHistory.AddUserMessage(contentWithImageUrls);
+
+                    _logger.LogInformation("Processing message with {ImageCount} image URL(s) [Tool available] from {UserName}",
+                        context.ImageUrls.Count, context.UserName);
+                }
+                // Vision非対応 + Vision設定なし: 画像を完全に無視
             }
 
             // OpenAIPromptExecutionSettingsを設定（AutoでFunction Callingを有効化）
