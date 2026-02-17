@@ -122,6 +122,12 @@ public class DiscordBotService : IDisposable
         // 各種名前をキャッシュ
         CacheUserName(userCache, message.Author);
 
+        // 添付画像のURLを取得（画像のみ）
+        var imageUrls = message.Attachments
+            .Where(a => a.ContentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true)
+            .Select(a => a.Url)
+            .ToList();
+
         var context = new MessageContext(
             message.Id,
             message.Author.Id,
@@ -129,7 +135,8 @@ public class DiscordBotService : IDisposable
             channel.Id,
             guildId,
             isChannelPublic,
-            memberIds
+            memberIds,
+            imageUrls.Count > 0 ? imageUrls : MessageContext.EmptyImageUrls
         );
 
         try

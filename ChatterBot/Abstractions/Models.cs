@@ -18,13 +18,19 @@ public record MessageContext(
     ulong ChannelId,
     ulong? GuildId,
     bool IsChannelPublic = true,
-    IReadOnlyList<ulong> MemberIds = null!
+    IReadOnlyList<ulong> MemberIds = null!,
+    IReadOnlyList<string> ImageUrls = null!
 )
 {
     /// <summary>
     /// デフォルトの空メンバーリスト
     /// </summary>
     public static readonly IReadOnlyList<ulong> EmptyMemberIds = Array.Empty<ulong>();
+
+    /// <summary>
+    /// デフォルトの空画像URLリスト
+    /// </summary>
+    public static readonly IReadOnlyList<string> EmptyImageUrls = Array.Empty<string>();
 }
 
 /// <summary>
