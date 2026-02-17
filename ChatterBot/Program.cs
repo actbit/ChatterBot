@@ -135,8 +135,10 @@ class Program
         services.AddSingleton<DiscordBotService>(sp =>
         {
             var processor = sp.GetRequiredService<IMessageProcessor>();
+            var historyManager = sp.GetRequiredService<IChatHistoryManager>();
+            var ragStore = sp.GetRequiredService<IRagHistoryStore>();
             var logger = sp.GetRequiredService<ILogger<DiscordBotService>>();
-            return new DiscordBotService(processor, discordToken, logger);
+            return new DiscordBotService(processor, historyManager, ragStore, discordToken, logger);
         });
 
         var serviceProvider = services.BuildServiceProvider();

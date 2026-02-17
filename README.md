@@ -461,6 +461,11 @@ ChatterBot/
     ├── SemanticKernelMessageProcessor.cs  # AI処理
     ├── ChatHistoryManager.cs          # 履歴管理
     └── SqliteRagHistoryStore.cs       # RAG実装
+
+ChatterBot.Tests.Console/          # テストプロジェクト
+├── Program.cs                    # コンテキスト認識テスト
+├── appsettings.json              # テスト用設定
+└── SampleHistory.json            # サンプル会話データ
 ```
 
 ### 使用パッケージ
@@ -471,6 +476,55 @@ ChatterBot/
 | Microsoft.SemanticKernel | 1.70.0 | AI統合・Function Calling |
 | Microsoft.Extensions.AI | 10.3.0 | Embedding生成 |
 | Microsoft.Data.Sqlite | 10.0.3 | データベース |
+
+---
+
+## 🧪 テスト
+
+### コンテキスト認識テスト
+
+会話履歴から直近のトピックを正しく認識できるかテストするコンソールアプリです。
+
+```bash
+cd ChatterBot.Tests.Console
+
+# 環境変数設定
+export OPENAI_MODEL_ID="gpt-4o"
+export OPENAI_API_KEY="your_key"
+# GLMの場合
+# export OPENAI_ENDPOINT="https://open.bigmodel.cn/api/paas/v4/"
+
+# 実行
+dotnet run
+```
+
+#### テスト内容
+
+3つの異なるトピックの会話履歴を用意：
+- **トピックA**: ゲームの話（エルデンリング）
+- **トピックB**: 料理の話（カレー）
+- **トピックC**: 旅行の話（沖縄）
+
+曖昧な質問（「で、どう思う？」「続きは？」など）に対して、直近のトピック（旅行）に関連する応答が返ってくるかを確認できます。
+
+#### 使い方
+
+```
+=== 会話コンテキスト認識テスト ===
+モデル: gpt-4o
+最大履歴件数: 30
+
+--- メニュー ---
+1: トピックAのみ（ゲームの話）
+2: トピックA+B（ゲーム→料理）
+3: トピックA+B+C（ゲーム→料理→旅行）★推奨
+4: カスタム選択
+q: 終了
+
+選択: 3
+```
+
+これにより、異なるLLM（4B/8B/GLM-4-Flash等）での会話コンテキスト認識精度を比較できます。
 
 ---
 

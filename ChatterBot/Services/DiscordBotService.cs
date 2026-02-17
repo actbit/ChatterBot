@@ -15,6 +15,8 @@ public class DiscordBotService : IDisposable
 {
     private readonly DiscordSocketClient _client;
     private readonly IMessageProcessor _messageProcessor;
+    private readonly IChatHistoryManager _historyManager;
+    private readonly IRagHistoryStore _ragStore;
     private readonly string _discordToken;
     private readonly ILogger<DiscordBotService> _logger;
 
@@ -23,10 +25,14 @@ public class DiscordBotService : IDisposable
 
     public DiscordBotService(
         IMessageProcessor messageProcessor,
+        IChatHistoryManager historyManager,
+        IRagHistoryStore ragStore,
         string discordToken,
         ILogger<DiscordBotService> logger)
     {
         _messageProcessor = messageProcessor;
+        _historyManager = historyManager;
+        _ragStore = ragStore;
         _discordToken = discordToken;
         _logger = logger;
 
@@ -42,6 +48,10 @@ public class DiscordBotService : IDisposable
         _client = new DiscordSocketClient(config);
         _client.Log += LogAsync;
         _client.MessageReceived += MessageReceivedAsync;
+        _client.MessageUpdated += MessageUpdatedAsync;
+        _client.MessageDeleted += MessageDeletedAsync;
+        _client.ChannelDestroyed += ChannelDestroyedAsync;
+        _client.LeftGuild += LeftGuildAsync;
         _client.Ready += ReadyAsync;
     }
 
@@ -78,9 +88,32 @@ public class DiscordBotService : IDisposable
 
         // Guild/DMの情報を取得
         ulong? guildId = null;
+        bool isChannelPublic = true;
+        IReadOnlyList<ulong> memberIds = MessageContext.EmptyMemberIds;
+
         if (channel is SocketGuildChannel guildChannel)
         {
             guildId = guildChannel.Guild.Id;
+
+            // チャンネルの公開/非公開を判定
+            if (channel is SocketTextChannel textChannel)
+            {
+                // @everyone ロールがReadMessages権限を持っていればPublic
+                var everyonePermissions = textChannel.GetPermissionOverwrite(guildChannel.Guild.EveryoneRole);
+                isChannelPublic = everyonePermissions == null ||
+                                   everyonePermissions.Value.ViewChannel != PermValue.Deny;
+
+                // メンバーIDのリストを取得
+                memberIds = textChannel.Users.Select(u => u.Id).ToList();
+            }
+
+            // チャンネル情報をRAGストアに保存
+            await _ragStore.UpdateChannelInfoAsync(guildId, channel.Id, isChannelPublic, memberIds);
+        }
+        else if (channel is SocketDMChannel dmChannel)
+        {
+            // DMの場合は自分と相手
+            memberIds = new[] { _client.CurrentUser.Id, dmChannel.Recipient.Id };
         }
 
         // ユーザー名をキャッシュに追加（メンション変換用）
@@ -90,10 +123,13 @@ public class DiscordBotService : IDisposable
         CacheUserName(userCache, message.Author);
 
         var context = new MessageContext(
+            message.Id,
             message.Author.Id,
             message.Author.Username,
             channel.Id,
-            guildId
+            guildId,
+            isChannelPublic,
+            memberIds
         );
 
         try
@@ -104,12 +140,126 @@ public class DiscordBotService : IDisposable
             {
                 // @username や xxxさん をDiscordメンション形式に変換
                 var replyContent = ConvertMentions(result.ReplyContent, userCache);
-                await message.Channel.SendMessageAsync(replyContent);
+                var replyMessage = await message.Channel.SendMessageAsync(replyContent);
+
+                // アシスタントメッセージを履歴に追加
+                await _historyManager.AddAssistantMessageAsync(guildId, channel.Id, replyMessage.Id, result.ReplyContent);
+
+                // RAGストアにも保存
+                await _ragStore.StoreAsync(guildId, channel.Id, replyMessage.Id, _client.CurrentUser.Id, "ChatterBot", "assistant", result.ReplyContent);
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing message from {Username}", message.Author.Username);
+        }
+    }
+
+    private async Task MessageUpdatedAsync(Cacheable<IMessage, ulong> before, SocketMessage after, ISocketMessageChannel channel)
+    {
+        // Bot自身のメッセージは無視
+        if (after.Author.Id == _client.CurrentUser.Id)
+            return;
+
+        // システムメッセージは無視
+        if (after is not SocketUserMessage)
+            return;
+
+        var beforeMessage = await before.GetOrDownloadAsync();
+        if (beforeMessage == null)
+            return;
+
+        // 内容が変わっていない場合は無視
+        if (beforeMessage.Content == after.Content)
+            return;
+
+        // Guild/DMの情報を取得
+        ulong? guildId = null;
+        if (channel is SocketGuildChannel guildChannel)
+        {
+            guildId = guildChannel.Guild.Id;
+        }
+
+        var userName = after.Author.GlobalName ?? after.Author.Username;
+
+        try
+        {
+            // 履歴を更新（message_idで特定）
+            await _historyManager.UpdateUserMessageAsync(
+                after.Id,
+                userName,
+                after.Content);
+
+            // RAGストアも更新
+            await _ragStore.UpdateAsync(after.Id, after.Content);
+
+            _logger.LogInformation("Message updated by {Username}: \"{Old}\" -> \"{New}\"",
+                userName, beforeMessage.Content, after.Content);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating message history for {Username}", userName);
+        }
+    }
+
+    private async Task MessageDeletedAsync(Cacheable<IMessage, ulong> message, Cacheable<IMessageChannel, ulong> channel)
+    {
+        try
+        {
+            // 履歴から削除（message_idで特定）
+            await _historyManager.DeleteUserMessageAsync(message.Id);
+            await _ragStore.DeleteMessageAsync(message.Id);
+
+            _logger.LogInformation("Message deleted: {MessageId}", message.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deleting message history for {MessageId}", message.Id);
+        }
+    }
+
+    private async Task ChannelDestroyedAsync(SocketChannel channel)
+    {
+        if (channel is not SocketTextChannel textChannel)
+            return;
+
+        try
+        {
+            ulong? guildId = textChannel.Guild?.Id;
+
+            // 履歴からチャンネルの全データを削除
+            await _historyManager.DeleteChannelAsync(guildId, channel.Id);
+            await _ragStore.DeleteChannelAsync(channel.Id);
+
+            // ユーザーキャッシュもクリア
+            _channelUserCache.TryRemove(channel.Id, out _);
+
+            _logger.LogInformation("Channel deleted: {ChannelName} ({ChannelId})", textChannel.Name, channel.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deleting channel history for {ChannelId}", channel.Id);
+        }
+    }
+
+    private async Task LeftGuildAsync(SocketGuild guild)
+    {
+        try
+        {
+            // ギルドの全履歴を削除
+            await _ragStore.DeleteGuildAsync(guild.Id);
+
+            // このギルドのチャンネルのユーザーキャッシュもクリア
+            foreach (var channel in guild.Channels)
+            {
+                _channelUserCache.TryRemove(channel.Id, out _);
+            }
+
+            _logger.LogInformation("Left guild: {GuildName} ({GuildId})", guild.Name, guild.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deleting guild history for {GuildId}", guild.Id);
         }
     }
 

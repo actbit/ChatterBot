@@ -49,7 +49,10 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
 
             // ユーザーメッセージを履歴に追加
             await _historyManager.AddUserMessageAsync(
-                context.GuildId, context.ChannelId, context.UserId, context.UserName, content);
+                context.GuildId, context.ChannelId, context.MessageId, context.UserId, context.UserName, content);
+
+            // RAGストアにも保存
+            await _ragStore.StoreAsync(context.GuildId, context.ChannelId, context.MessageId, context.UserId, context.UserName, "user", content);
 
             // ChatHistoryを取得
             var chatHistory = _historyManager.GetOrCreateHistory(context.GuildId, context.ChannelId);
@@ -62,7 +65,7 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
 
             // プラグインをインスタンス化して登録
             var replyPlugin = new ReplyPlugin(decisionSource);
-            var historySearchPlugin = new HistorySearchPlugin(_ragStore, context.GuildId, context.ChannelId);
+            var historySearchPlugin = new HistorySearchPlugin(_ragStore, context.GuildId, context.ChannelId, context.IsChannelPublic, context.MemberIds);
             var timePlugin = new TimePlugin();
             var urlReaderPlugin = new UrlReaderPlugin();
             var mathPlugin = new MathPlugin();
@@ -119,12 +122,6 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
             }
 
             var decision = await decisionSource.Task;
-
-            if (decision.ShouldReply && decision.Content != null)
-            {
-                // アシスタントメッセージを履歴に追加
-                await _historyManager.AddAssistantMessageAsync(context.GuildId, context.ChannelId, decision.Content);
-            }
 
             return new ProcessResult(decision.ShouldReply, decision.Content);
         }
