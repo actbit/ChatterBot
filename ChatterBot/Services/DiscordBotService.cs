@@ -22,6 +22,10 @@ public class DiscordBotService : IDisposable
 
     // チャンネルごとの直近のユーザー名→IDマッピング（メンション変換用）
     private readonly ConcurrentDictionary<ulong, ConcurrentDictionary<string, ulong>> _channelUserCache = new();
+    private const int MaxCachedChannels = 1000;
+
+    // 重複メッセージ処理防止用（メッセージID → 処理完了Task）
+    private readonly ConcurrentDictionary<ulong, Task> _processingMessages = new();
 
     public DiscordBotService(
         IMessageProcessor messageProcessor,
@@ -47,7 +51,10 @@ public class DiscordBotService : IDisposable
 
         _client = new DiscordSocketClient(config);
         _client.Log += LogAsync;
-        _client.MessageReceived += MessageReceivedAsync;
+        _client.MessageReceived += async (msg) =>
+        {
+            _ = Task.Run(() => MessageReceivedAsync(msg));
+        };
         _client.MessageUpdated += MessageUpdatedAsync;
         _client.MessageDeleted += MessageDeletedAsync;
         _client.ChannelDestroyed += ChannelDestroyedAsync;
@@ -83,8 +90,22 @@ public class DiscordBotService : IDisposable
         if (message is not SocketUserMessage userMessage)
             return;
 
+        // 重複メッセージ処理防止（同じメッセージIDは1回のみ処理）
+        var processingTask = _processingMessages.GetOrAdd(message.Id, _ => ProcessMessageAsync(userMessage));
+        try
+        {
+            await processingTask;
+        }
+        finally
+        {
+            _processingMessages.TryRemove(message.Id, out _);
+        }
+    }
+
+    private async Task ProcessMessageAsync(SocketUserMessage userMessage)
+    {
         // チャンネルタイプを取得
-        var channel = message.Channel;
+        var channel = userMessage.Channel;
 
         // Guild/DMの情報を取得
         ulong? guildId = null;
@@ -114,24 +135,37 @@ public class DiscordBotService : IDisposable
         {
             // DMの場合は自分と相手
             memberIds = new[] { _client.CurrentUser.Id, dmChannel.Recipient.Id };
+
+            // DMチャンネル情報もRAGストアに保存
+            await _ragStore.UpdateChannelInfoAsync(null, channel.Id, false, memberIds);
         }
 
         // ユーザー名をキャッシュに追加（メンション変換用）
         var userCache = _channelUserCache.GetOrAdd(channel.Id, _ => new ConcurrentDictionary<string, ulong>(StringComparer.OrdinalIgnoreCase));
 
+        // キャッシュサイズ制限
+        if (_channelUserCache.Count > MaxCachedChannels)
+        {
+            var keys = _channelUserCache.Keys.Take(MaxCachedChannels / 2).ToList();
+            foreach (var key in keys)
+            {
+                _channelUserCache.TryRemove(key, out _);
+            }
+        }
+
         // 各種名前をキャッシュ
-        CacheUserName(userCache, message.Author);
+        CacheUserName(userCache, userMessage.Author);
 
         // 添付画像のURLを取得（画像のみ）
-        var imageUrls = message.Attachments
+        var imageUrls = userMessage.Attachments
             .Where(a => a.ContentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true)
             .Select(a => a.Url)
             .ToList();
 
         var context = new MessageContext(
-            message.Id,
-            message.Author.Id,
-            message.Author.Username,
+            userMessage.Id,
+            userMessage.Author.Id,
+            userMessage.Author.Username,
             channel.Id,
             guildId,
             isChannelPublic,
@@ -141,13 +175,13 @@ public class DiscordBotService : IDisposable
 
         try
         {
-            var result = await _messageProcessor.ProcessAsync(message.Content, context);
+            var result = await _messageProcessor.ProcessAsync(userMessage.Content, context);
 
             if (result.ShouldReply && result.ReplyContent != null)
             {
                 // @username や xxxさん をDiscordメンション形式に変換
                 var replyContent = ConvertMentions(result.ReplyContent, userCache);
-                var replyMessage = await message.Channel.SendMessageAsync(replyContent);
+                var replyMessage = await userMessage.Channel.SendMessageAsync(replyContent);
 
                 // アシスタントメッセージを履歴に追加
                 await _historyManager.AddAssistantMessageAsync(guildId, channel.Id, replyMessage.Id, result.ReplyContent);
@@ -158,7 +192,7 @@ public class DiscordBotService : IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing message from {Username}", message.Author.Username);
+            _logger.LogError(ex, "Error processing message from {Username}", userMessage.Author.Username);
         }
     }
 
@@ -227,21 +261,31 @@ public class DiscordBotService : IDisposable
 
     private async Task ChannelDestroyedAsync(SocketChannel channel)
     {
-        if (channel is not SocketTextChannel textChannel)
-            return;
-
         try
         {
-            ulong? guildId = textChannel.Guild?.Id;
+            if (channel is SocketTextChannel textChannel)
+            {
+                ulong? guildId = textChannel.Guild?.Id;
 
-            // 履歴からチャンネルの全データを削除
-            await _historyManager.DeleteChannelAsync(guildId, channel.Id);
-            await _ragStore.DeleteChannelAsync(channel.Id);
+                // 履歴からチャンネルの全データを削除
+                await _historyManager.DeleteChannelAsync(guildId, channel.Id);
+                await _ragStore.DeleteChannelAsync(channel.Id);
 
-            // ユーザーキャッシュもクリア
-            _channelUserCache.TryRemove(channel.Id, out _);
+                // ユーザーキャッシュもクリア
+                _channelUserCache.TryRemove(channel.Id, out _);
 
-            _logger.LogInformation("Channel deleted: {ChannelName} ({ChannelId})", textChannel.Name, channel.Id);
+                _logger.LogInformation("Channel deleted: {ChannelName} ({ChannelId})", textChannel.Name, channel.Id);
+            }
+            else if (channel is SocketDMChannel)
+            {
+                ulong? guildId = null;
+
+                await _historyManager.DeleteChannelAsync(guildId, channel.Id);
+                await _ragStore.DeleteChannelAsync(channel.Id);
+                _channelUserCache.TryRemove(channel.Id, out _);
+
+                _logger.LogInformation("DM channel deleted: ({ChannelId})", channel.Id);
+            }
         }
         catch (Exception ex)
         {
@@ -255,6 +299,7 @@ public class DiscordBotService : IDisposable
         {
             // ギルドの全履歴を削除
             await _ragStore.DeleteGuildAsync(guild.Id);
+            await _historyManager.DeleteGuildAsync(guild.Id);
 
             // このギルドのチャンネルのユーザーキャッシュもクリア
             foreach (var channel in guild.Channels)
@@ -373,6 +418,14 @@ public class DiscordBotService : IDisposable
         content = Regex.Replace(content, mentionPattern, match =>
         {
             var name = match.Groups[1].Value;
+
+            // Discord特殊メンションはスキップ
+            if (name.Equals("everyone", StringComparison.OrdinalIgnoreCase) ||
+                name.Equals("here", StringComparison.OrdinalIgnoreCase))
+            {
+                return match.Value;
+            }
+
             if (userCache.TryGetValue(name, out var userId))
             {
                 return $"<@{userId}>";
@@ -404,5 +457,7 @@ public class DiscordBotService : IDisposable
     public void Dispose()
     {
         _client?.Dispose();
+        (_historyManager as IDisposable)?.Dispose();
+        (_ragStore as IDisposable)?.Dispose();
     }
 }

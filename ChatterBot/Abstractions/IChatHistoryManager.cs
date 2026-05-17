@@ -8,6 +8,11 @@ namespace ChatterBot.Abstractions;
 public interface IChatHistoryManager
 {
     /// <summary>
+    /// データベースの初期化を行う
+    /// </summary>
+    Task InitializeAsync();
+
+    /// <summary>
     /// 指定されたチャンネルのChatHistoryを取得または作成する
     /// </summary>
     ChatHistory GetOrCreateHistory(ulong? guildId, ulong channelId);
@@ -36,6 +41,11 @@ public interface IChatHistoryManager
     /// チャンネルの全履歴を削除する
     /// </summary>
     Task DeleteChannelAsync(ulong? guildId, ulong channelId);
+
+    /// <summary>
+    /// ギルドの全履歴を削除する
+    /// </summary>
+    Task DeleteGuildAsync(ulong guildId);
 
     /// <summary>
     /// 直近N日分の履歴を読み込む

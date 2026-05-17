@@ -1,6 +1,8 @@
 using ChatterBot.Abstractions;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using System.Globalization;
 
 namespace ChatterBot.Services;
 
@@ -13,8 +15,10 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
     private readonly SqliteConnection _connection;
     private readonly IEmbeddingGenerator<string, Embedding<float>>? _embeddingGenerator;
     private readonly bool _embeddingEnabled;
+    private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly ILogger<SqliteRagHistoryStore>? _logger;
 
-    public SqliteRagHistoryStore(string databasePath, IEmbeddingGenerator<string, Embedding<float>>? embeddingGenerator = null)
+    public SqliteRagHistoryStore(string databasePath, IEmbeddingGenerator<string, Embedding<float>>? embeddingGenerator = null, ILogger<SqliteRagHistoryStore>? logger = null)
     {
         var directory = Path.GetDirectoryName(databasePath);
         if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
@@ -27,6 +31,7 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
         _connection.Open();
         _embeddingGenerator = embeddingGenerator;
         _embeddingEnabled = embeddingGenerator != null;
+        _logger = logger;
     }
 
     public async Task InitializeAsync()
@@ -77,39 +82,47 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
     /// </summary>
     public async Task UpdateChannelInfoAsync(ulong? guildId, ulong channelId, bool isPublic, IReadOnlyList<ulong> memberIds)
     {
-        // チャンネル情報を更新
-        var command = _connection.CreateCommand();
-        command.CommandText = """
-            INSERT INTO channel_info (channel_id, guild_id, is_public)
-            VALUES ($channelId, $guildId, $isPublic)
-            ON CONFLICT(channel_id) DO UPDATE SET
-                guild_id = excluded.guild_id,
-                is_public = excluded.is_public
-            """;
-
-        command.Parameters.AddWithValue("$channelId", (long)channelId);
-        command.Parameters.AddWithValue("$guildId", guildId.HasValue ? (long)guildId.Value : DBNull.Value);
-        command.Parameters.AddWithValue("$isPublic", isPublic ? 1 : 0);
-
-        await command.ExecuteNonQueryAsync();
-
-        // 既存のメンバーを削除
-        var deleteCommand = _connection.CreateCommand();
-        deleteCommand.CommandText = "DELETE FROM channel_members WHERE channel_id = $channelId";
-        deleteCommand.Parameters.AddWithValue("$channelId", (long)channelId);
-        await deleteCommand.ExecuteNonQueryAsync();
-
-        // 新しいメンバーを追加
-        foreach (var userId in memberIds)
+        await _writeLock.WaitAsync();
+        try
         {
-            var insertCommand = _connection.CreateCommand();
-            insertCommand.CommandText = """
-                INSERT OR IGNORE INTO channel_members (channel_id, user_id)
-                VALUES ($channelId, $userId)
+            // チャンネル情報を更新
+            var command = _connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO channel_info (channel_id, guild_id, is_public)
+                VALUES ($channelId, $guildId, $isPublic)
+                ON CONFLICT(channel_id) DO UPDATE SET
+                    guild_id = excluded.guild_id,
+                    is_public = excluded.is_public
                 """;
-            insertCommand.Parameters.AddWithValue("$channelId", (long)channelId);
-            insertCommand.Parameters.AddWithValue("$userId", (long)userId);
-            await insertCommand.ExecuteNonQueryAsync();
+
+            command.Parameters.AddWithValue("$channelId", (long)channelId);
+            command.Parameters.AddWithValue("$guildId", guildId.HasValue ? (long)guildId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("$isPublic", isPublic ? 1 : 0);
+
+            await command.ExecuteNonQueryAsync();
+
+            // 既存のメンバーを削除
+            var deleteCommand = _connection.CreateCommand();
+            deleteCommand.CommandText = "DELETE FROM channel_members WHERE channel_id = $channelId";
+            deleteCommand.Parameters.AddWithValue("$channelId", (long)channelId);
+            await deleteCommand.ExecuteNonQueryAsync();
+
+            // 新しいメンバーを追加
+            foreach (var userId in memberIds)
+            {
+                var insertCommand = _connection.CreateCommand();
+                insertCommand.CommandText = """
+                    INSERT OR IGNORE INTO channel_members (channel_id, user_id)
+                    VALUES ($channelId, $userId)
+                    """;
+                insertCommand.Parameters.AddWithValue("$channelId", (long)channelId);
+                insertCommand.Parameters.AddWithValue("$userId", (long)userId);
+                await insertCommand.ExecuteNonQueryAsync();
+            }
+        }
+        finally
+        {
+            _writeLock.Release();
         }
     }
 
@@ -126,26 +139,34 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Embedding generation failed: {ex.Message}");
+                _logger?.LogWarning(ex, "Embedding generation failed: {Message}", ex.Message);
             }
         }
 
-        var command = _connection.CreateCommand();
-        command.CommandText = """
-            INSERT INTO chat_messages (message_id, guild_id, channel_id, user_id, user_name, role, content, embedding)
-            VALUES ($messageId, $guildId, $channelId, $userId, $userName, $role, $content, $embedding)
-            """;
+        await _writeLock.WaitAsync();
+        try
+        {
+            var command = _connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO chat_messages (message_id, guild_id, channel_id, user_id, user_name, role, content, embedding)
+                VALUES ($messageId, $guildId, $channelId, $userId, $userName, $role, $content, $embedding)
+                """;
 
-        command.Parameters.AddWithValue("$messageId", (long)messageId);
-        command.Parameters.AddWithValue("$guildId", guildId.HasValue ? (long)guildId.Value : DBNull.Value);
-        command.Parameters.AddWithValue("$channelId", (long)channelId);
-        command.Parameters.AddWithValue("$userId", (long)userId);
-        command.Parameters.AddWithValue("$userName", userName);
-        command.Parameters.AddWithValue("$role", role);
-        command.Parameters.AddWithValue("$content", content);
-        command.Parameters.AddWithValue("$embedding", embeddingBytes != null ? embeddingBytes : DBNull.Value);
+            command.Parameters.AddWithValue("$messageId", (long)messageId);
+            command.Parameters.AddWithValue("$guildId", guildId.HasValue ? (long)guildId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("$channelId", (long)channelId);
+            command.Parameters.AddWithValue("$userId", (long)userId);
+            command.Parameters.AddWithValue("$userName", userName);
+            command.Parameters.AddWithValue("$role", role);
+            command.Parameters.AddWithValue("$content", content);
+            command.Parameters.AddWithValue("$embedding", embeddingBytes != null ? embeddingBytes : DBNull.Value);
 
-        await command.ExecuteNonQueryAsync();
+            await command.ExecuteNonQueryAsync();
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
     }
 
     public async Task UpdateAsync(ulong messageId, string newContent)
@@ -161,75 +182,107 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Embedding generation failed: {ex.Message}");
+                _logger?.LogWarning(ex, "Embedding generation failed: {Message}", ex.Message);
             }
         }
 
-        var command = _connection.CreateCommand();
-        command.CommandText = """
-            UPDATE chat_messages
-            SET content = $newContent, embedding = $embedding
-            WHERE message_id = $messageId
-            """;
+        await _writeLock.WaitAsync();
+        try
+        {
+            var command = _connection.CreateCommand();
+            command.CommandText = """
+                UPDATE chat_messages
+                SET content = $newContent, embedding = $embedding
+                WHERE message_id = $messageId
+                """;
 
-        command.Parameters.AddWithValue("$messageId", (long)messageId);
-        command.Parameters.AddWithValue("$newContent", newContent);
-        command.Parameters.AddWithValue("$embedding", embeddingBytes != null ? embeddingBytes : DBNull.Value);
+            command.Parameters.AddWithValue("$messageId", (long)messageId);
+            command.Parameters.AddWithValue("$newContent", newContent);
+            command.Parameters.AddWithValue("$embedding", embeddingBytes != null ? embeddingBytes : DBNull.Value);
 
-        await command.ExecuteNonQueryAsync();
+            await command.ExecuteNonQueryAsync();
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
     }
 
     public async Task DeleteMessageAsync(ulong messageId)
     {
-        var command = _connection.CreateCommand();
-        command.CommandText = "DELETE FROM chat_messages WHERE message_id = $messageId";
-        command.Parameters.AddWithValue("$messageId", (long)messageId);
-        await command.ExecuteNonQueryAsync();
+        await _writeLock.WaitAsync();
+        try
+        {
+            var command = _connection.CreateCommand();
+            command.CommandText = "DELETE FROM chat_messages WHERE message_id = $messageId";
+            command.Parameters.AddWithValue("$messageId", (long)messageId);
+            await command.ExecuteNonQueryAsync();
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
     }
 
     public async Task DeleteChannelAsync(ulong channelId)
     {
-        // メッセージ削除
-        var deleteMessages = _connection.CreateCommand();
-        deleteMessages.CommandText = "DELETE FROM chat_messages WHERE channel_id = $channelId";
-        deleteMessages.Parameters.AddWithValue("$channelId", (long)channelId);
-        await deleteMessages.ExecuteNonQueryAsync();
+        await _writeLock.WaitAsync();
+        try
+        {
+            // メッセージ削除
+            var deleteMessages = _connection.CreateCommand();
+            deleteMessages.CommandText = "DELETE FROM chat_messages WHERE channel_id = $channelId";
+            deleteMessages.Parameters.AddWithValue("$channelId", (long)channelId);
+            await deleteMessages.ExecuteNonQueryAsync();
 
-        // チャンネル情報削除
-        var deleteChannelInfo = _connection.CreateCommand();
-        deleteChannelInfo.CommandText = "DELETE FROM channel_info WHERE channel_id = $channelId";
-        deleteChannelInfo.Parameters.AddWithValue("$channelId", (long)channelId);
-        await deleteChannelInfo.ExecuteNonQueryAsync();
+            // チャンネル情報削除
+            var deleteChannelInfo = _connection.CreateCommand();
+            deleteChannelInfo.CommandText = "DELETE FROM channel_info WHERE channel_id = $channelId";
+            deleteChannelInfo.Parameters.AddWithValue("$channelId", (long)channelId);
+            await deleteChannelInfo.ExecuteNonQueryAsync();
 
-        // チャンネルメンバー削除
-        var deleteMembers = _connection.CreateCommand();
-        deleteMembers.CommandText = "DELETE FROM channel_members WHERE channel_id = $channelId";
-        deleteMembers.Parameters.AddWithValue("$channelId", (long)channelId);
-        await deleteMembers.ExecuteNonQueryAsync();
+            // チャンネルメンバー削除
+            var deleteMembers = _connection.CreateCommand();
+            deleteMembers.CommandText = "DELETE FROM channel_members WHERE channel_id = $channelId";
+            deleteMembers.Parameters.AddWithValue("$channelId", (long)channelId);
+            await deleteMembers.ExecuteNonQueryAsync();
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
     }
 
     public async Task DeleteGuildAsync(ulong guildId)
     {
-        // ギルドのメッセージ削除
-        var deleteMessages = _connection.CreateCommand();
-        deleteMessages.CommandText = "DELETE FROM chat_messages WHERE guild_id = $guildId";
-        deleteMessages.Parameters.AddWithValue("$guildId", (long)guildId);
-        await deleteMessages.ExecuteNonQueryAsync();
+        await _writeLock.WaitAsync();
+        try
+        {
+            // ギルドのメッセージ削除
+            var deleteMessages = _connection.CreateCommand();
+            deleteMessages.CommandText = "DELETE FROM chat_messages WHERE guild_id = $guildId";
+            deleteMessages.Parameters.AddWithValue("$guildId", (long)guildId);
+            await deleteMessages.ExecuteNonQueryAsync();
 
-        // ギルドのチャンネル情報削除
-        var deleteChannelInfo = _connection.CreateCommand();
-        deleteChannelInfo.CommandText = "DELETE FROM channel_info WHERE guild_id = $guildId";
-        deleteChannelInfo.Parameters.AddWithValue("$guildId", (long)guildId);
-        await deleteChannelInfo.ExecuteNonQueryAsync();
+            // ギルドのチャンネルメンバー削除（channel_info参照前に実行）
+            var deleteMembers = _connection.CreateCommand();
+            deleteMembers.CommandText = """
+                DELETE FROM channel_members
+                WHERE channel_id IN (SELECT channel_id FROM channel_info WHERE guild_id = $guildId)
+                """;
+            deleteMembers.Parameters.AddWithValue("$guildId", (long)guildId);
+            await deleteMembers.ExecuteNonQueryAsync();
 
-        // ギルドのチャンネルメンバー削除（サブクエリで削除）
-        var deleteMembers = _connection.CreateCommand();
-        deleteMembers.CommandText = """
-            DELETE FROM channel_members
-            WHERE channel_id IN (SELECT channel_id FROM channel_info WHERE guild_id = $guildId)
-            """;
-        deleteMembers.Parameters.AddWithValue("$guildId", (long)guildId);
-        await deleteMembers.ExecuteNonQueryAsync();
+            // ギルドのチャンネル情報削除（メンバー削除の後に実行）
+            var deleteChannelInfo = _connection.CreateCommand();
+            deleteChannelInfo.CommandText = "DELETE FROM channel_info WHERE guild_id = $guildId";
+            deleteChannelInfo.Parameters.AddWithValue("$guildId", (long)guildId);
+            await deleteChannelInfo.ExecuteNonQueryAsync();
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
     }
 
     public async Task<IReadOnlyList<HistoryRecord>> SearchAsync(
@@ -312,7 +365,7 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
                             }
                         }
 
-                        var createdAt = DateTime.Parse(reader.GetString(8));
+                        var createdAt = DateTime.Parse(reader.GetString(8), CultureInfo.InvariantCulture);
 
                         if (storedEmbedding != null)
                         {
@@ -334,7 +387,7 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Embedding search failed: {ex.Message}");
+                _logger?.LogWarning(ex, "Embedding search failed: {Message}", ex.Message);
                 return await TextSearchAsync(query, currentGuildId, currentChannelId, currentMembers, days, limit);
             }
         }
@@ -441,7 +494,7 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
             WHERE m.content LIKE $query
             """;
 
-        command.Parameters.AddWithValue("$query", $"%{query}%");
+        command.Parameters.AddWithValue("$query", $"%{EscapeLikePattern(query)}%");
 
         if (cutoffDate != null)
         {
@@ -469,7 +522,7 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
             var recordUserName = reader.GetString(3);
             var recordRole = reader.GetString(4);
             var recordContent = reader.GetString(5);
-            var createdAt = DateTime.Parse(reader.GetString(6));
+            var createdAt = DateTime.Parse(reader.GetString(6), CultureInfo.InvariantCulture);
 
             results.Add(new HistoryRecord(recordGuildId, recordChannelId, recordUserId, recordUserName, recordRole, recordContent, createdAt, null));
 
@@ -508,7 +561,7 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
             var recordUserName = reader.GetString(3);
             var recordRole = reader.GetString(4);
             var recordContent = reader.GetString(5);
-            var createdAt = DateTime.Parse(reader.GetString(6));
+            var createdAt = DateTime.Parse(reader.GetString(6), CultureInfo.InvariantCulture);
 
             results.Add(new HistoryRecord(recordGuildId, recordChannelId, recordUserId, recordUserName, recordRole, recordContent, createdAt, null));
         }
@@ -539,6 +592,14 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
         }
 
         return results;
+    }
+
+    private static string EscapeLikePattern(string input)
+    {
+        return input
+            .Replace("[", "[[]")
+            .Replace("%", "[%]")
+            .Replace("_", "[_]");
     }
 
     private static byte[] EmbeddingToBytes(ReadOnlyMemory<float> embedding)
@@ -581,13 +642,14 @@ public class SqliteRagHistoryStore : IRagHistoryStore, IDisposable
         magnitudeB = MathF.Sqrt(magnitudeB);
 
         if (magnitudeA == 0 || magnitudeB == 0)
-            return 0f;
+            return 0;
 
         return dotProduct / (magnitudeA * magnitudeB);
     }
 
     public void Dispose()
     {
+        _writeLock.Dispose();
         _connection.Dispose();
     }
 }

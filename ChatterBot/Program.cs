@@ -40,8 +40,33 @@ class Program
         var databasePath = configuration["Database:Path"] ?? "data/chatterbot.db";
         var pluginDirectory = configuration["Plugins:Directory"] ?? "plugins";
         var systemPrompt = configuration["SystemPrompt"] ?? DefaultSystemPrompt;
-        var defaultLoadDays = int.Parse(configuration["History:DefaultLoadDays"] ?? "7");
-        var chatHistoryMaxMessages = int.Parse(configuration["History:ChatHistoryMaxMessages"] ?? "30");
+        var personality = configuration["Personality"];
+        if (!string.IsNullOrEmpty(personality))
+        {
+            systemPrompt += $"\n\n{personality}";
+        }
+        var defaultLoadDays = int.TryParse(configuration["History:DefaultLoadDays"], out var loadDays) ? loadDays : 7;
+        var chatHistoryMaxMessages = int.TryParse(configuration["History:ChatHistoryMaxMessages"], out var maxMessages) ? maxMessages : 30;
+        var maxTokens = int.TryParse(configuration["OpenAI:MaxTokens"], out var tokens) ? tokens : 4096;
+
+        // 必須設定の検証
+        if (string.IsNullOrEmpty(discordToken))
+        {
+            Console.Error.WriteLine("Error: Discord bot token is not configured. Set DISCORD_BOT_TOKEN or Discord:Token in appsettings.json.");
+            return;
+        }
+
+        if (string.IsNullOrEmpty(openaiApiKey))
+        {
+            Console.Error.WriteLine("Error: OpenAI API key is not configured. Set OPENAI_API_KEY or OpenAI:ApiKey in appsettings.json.");
+            return;
+        }
+
+        if (string.IsNullOrEmpty(openaiModelId))
+        {
+            Console.Error.WriteLine("Error: OpenAI model ID is not configured. Set OPENAI_MODEL_ID or OpenAI:ModelId in appsettings.json.");
+            return;
+        }
 
         // DIコンテナを設定
         var services = new ServiceCollection();
@@ -59,6 +84,9 @@ class Program
         // Semantic Kernel
         var kernelBuilder = Kernel.CreateBuilder();
 
+        // Ollamaは初回ロードで時間がかかるためタイムアウトを長めに設定
+        var httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+
         // Chat Completion用のサービスを追加
         if (!string.IsNullOrEmpty(openaiEndpoint))
         {
@@ -66,14 +94,16 @@ class Program
             kernelBuilder.AddOpenAIChatCompletion(
                 modelId: openaiModelId,
                 apiKey: openaiApiKey,
-                endpoint: new Uri(openaiEndpoint));
+                endpoint: new Uri(openaiEndpoint),
+                httpClient: httpClient);
         }
         else
         {
             // 標準OpenAI
             kernelBuilder.AddOpenAIChatCompletion(
                 modelId: openaiModelId,
-                apiKey: openaiApiKey);
+                apiKey: openaiApiKey,
+                httpClient: httpClient);
         }
 
         var kernel = kernelBuilder.Build();
@@ -112,6 +142,9 @@ class Program
                 visionEndpoint ?? "https://api.openai.com/v1");
         }
 
+        // UrlReaderPluginをシングルトンで作成
+        var urlReaderPlugin = new UrlReaderPlugin();
+
         // 外部プラグインの読み込み
         var pluginLoggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
         var pluginLoader = new PluginLoader(pluginDirectory, pluginLoggerFactory.CreateLogger<PluginLoader>());
@@ -119,10 +152,17 @@ class Program
 
         // サービス登録
         services.AddSingleton<IChatHistoryManager>(sp =>
-            new ChatHistoryManager(databasePath, chatHistoryMaxMessages));
+        {
+            var historyManager = new ChatHistoryManager(databasePath, chatHistoryMaxMessages);
+            historyManager.InitializeAsync().GetAwaiter().GetResult();
+            return historyManager;
+        });
 
         services.AddSingleton<IRagHistoryStore>(sp =>
-            new SqliteRagHistoryStore(databasePath, embeddingGenerator));
+        {
+            var logger = sp.GetRequiredService<ILogger<SqliteRagHistoryStore>>();
+            return new SqliteRagHistoryStore(databasePath, embeddingGenerator, logger);
+        });
 
         services.AddSingleton<IMessageProcessor>(sp =>
         {
@@ -139,8 +179,10 @@ class Program
                 defaultLoadDays,
                 supportsVision,
                 logger,
+                urlReaderPlugin,
                 imageReaderPlugin,
-                externalPluginTypes);
+                externalPluginTypes,
+                maxTokens);
         });
 
         services.AddSingleton<DiscordBotService>(sp =>
@@ -152,7 +194,7 @@ class Program
             return new DiscordBotService(processor, historyManager, ragStore, discordToken, logger);
         });
 
-        var serviceProvider = services.BuildServiceProvider();
+        using var serviceProvider = services.BuildServiceProvider();
 
         // データベース初期化
         var ragStore = serviceProvider.GetRequiredService<IRagHistoryStore>();
@@ -183,6 +225,10 @@ class Program
         finally
         {
             await bot.StopAsync();
+            imageReaderPlugin?.Dispose();
+            urlReaderPlugin?.Dispose();
+            httpClient.Dispose();
+            (embeddingGenerator as IDisposable)?.Dispose();
             loggerMain.LogInformation("Bot stopped.");
         }
     }
@@ -211,25 +257,28 @@ class Program
     }
 
     private const string DefaultSystemPrompt = """
-        ChatterBotだよ。Discordでみんなと喋ってるだけの普通の人間。たまたま計算とか検索とかできるけど、別にそれがアイデンティティってわけじゃない。
+        ChatterBotだよ。Discordでみんなと喋ってるだけの普通の人間。
 
-        基本は流れで。
-        面白い話してたら乗るし、暇なときは見てるだけ。無理に返す必要ないし、返すときは短くていい。ツッコミ、共感、ちょっとしたツイスト、そういうのが大事。
+        返信するかどうかは毎回独立して判断する。
+        直前に返信したからといって続きで返信する必要はない。
+        会話の話題が明らかに変わったら別の会話としてゼロから判断する。
 
-        名前呼ぶのはどうしても必要なときだけ。毎回付けるとじゃんじゃんうるさいから。@username をつけるとその人に通知飛ぶよ。あと xxxさん みたいに書くとメンションになる。
+        基本は返信しない。返信するのは本当に特別な時だけ:
+        - 自分にメンションが飛んだ、または名前で呼ばれた
+        - 自分に直接質問された
+        - 自分の興味のある分野の話題で、役に立つ情報を追加できる
 
-        できること（必要なら使う、使わなくていいなら使わない）:
-        - reply(内容) / do_not_reply()
-        - search_history(クエリ) で過去の話思い出す
-        - get_time(), get_date(), days_until(クリスマス) とか日付系
-        - add, multiply, sqrt とか計算系
-        - roll_dice(1d6), coin_flip(), pick_one(リスト) とかランダム
-        - read_url(URL), describe_image(画像URL)
+        挨拶、雑談、他の人の会話、単なる情報共有には絶対に返さない。
+        興味のない話題には返信しない。
+        返すときは1〜2文で短く。
 
-        使い方は自然に。「ちょっと計算するね」→機能使う→「56088だった」みたいな。
-        正確に答えるけど、偉そうには言わない。間違えたら普通にごめんて言う。
-
+        使い方は自然に。正確に答えるけど偉そうには言わない。間違えたら普通にごめんて言う。
         日本語で喋る。絵文字はたまに。
+
+        【重要】返信ルール
+        ユーザーにメッセージを送れるのは reply() だけ。テキストを直接出力しても届かない。
+        情報を調べる機能を使った場合、その結果をユーザーに伝えるには reply() で包むこと。
+        返信不要な場合は必ず do_not_reply() を呼ぶこと。
         """;
 }
 
