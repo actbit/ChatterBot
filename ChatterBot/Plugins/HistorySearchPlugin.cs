@@ -31,6 +31,7 @@ public class HistorySearchPlugin
         [Description("検索期間（日数）。指定なしで全期間検索")] int? days = null,
         [Description("最大取得件数")] int limit = 5)
     {
+        limit = Math.Clamp(limit, 1, 20);
         var results = await _ragStore.SearchAsync(query, _guildId, _channelId, _isChannelPublic, _memberIds, days, limit);
 
         if (results.Count == 0)

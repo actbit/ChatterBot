@@ -12,10 +12,12 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
 {
     private readonly string _connectionString;
     private readonly int _maxMessages;
-    private readonly Dictionary<ulong, ChatHistory> _histories;
-    private readonly Dictionary<ulong, bool> _loadedChannels;
+    private readonly Dictionary<(ulong? GuildId, ulong ChannelId), ChatHistory> _histories;
+    private readonly Dictionary<(ulong? GuildId, ulong ChannelId), bool> _loadedChannels;
+    private readonly Dictionary<ulong, ChatMessageContent> _messageToContent = new();
     private readonly SqliteConnection _connection;
     private readonly object _lock = new();
+    private readonly SemaphoreSlim _asyncLock = new(1, 1);
 
     public ChatHistoryManager(string databasePath, int maxMessages = 30)
     {
@@ -27,12 +29,15 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
 
         _connectionString = $"Data Source={databasePath}";
         _maxMessages = maxMessages;
-        _histories = new Dictionary<ulong, ChatHistory>();
-        _loadedChannels = new Dictionary<ulong, bool>();
+        _histories = new Dictionary<(ulong? GuildId, ulong ChannelId), ChatHistory>();
+        _loadedChannels = new Dictionary<(ulong? GuildId, ulong ChannelId), bool>();
         _connection = new SqliteConnection(_connectionString);
         _connection.Open();
+    }
 
-        InitializeDatabaseAsync().GetAwaiter().GetResult();
+    public async Task InitializeAsync()
+    {
+        await InitializeDatabaseAsync();
     }
 
     private async Task InitializeDatabaseAsync()
@@ -64,18 +69,9 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
         await command.ExecuteNonQueryAsync();
     }
 
-    private static ulong GetHistoryKey(ulong? guildId, ulong channelId)
-    {
-        // guildIdとchannelIdを組み合わせて一意のキーを作成
-        // DMの場合はguildIdがnullなので、channelIdのみを使用
-        return guildId.HasValue
-            ? (guildId.Value << 32) | channelId
-            : channelId;
-    }
-
     public ChatHistory GetOrCreateHistory(ulong? guildId, ulong channelId)
     {
-        var key = GetHistoryKey(guildId, channelId);
+        var key = (guildId, channelId);
 
         lock (_lock)
         {
@@ -90,88 +86,162 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
 
     public async Task AddUserMessageAsync(ulong? guildId, ulong channelId, ulong messageId, ulong userId, string userName, string content)
     {
-        var key = GetHistoryKey(guildId, channelId);
+        var key = (guildId, channelId);
 
-        lock (_lock)
+        await _asyncLock.WaitAsync();
+        try
         {
             if (_histories.TryGetValue(key, out var history))
             {
                 TrimHistoryIfNeeded(history);
-                history.Add(new ChatMessageContent(AuthorRole.User, content) { AuthorName = userName });
+                var msg = new ChatMessageContent(AuthorRole.User, content) { AuthorName = userName };
+                history.Add(msg);
+                _messageToContent[messageId] = msg;
 
-                // 同時にRAG Storeにも保存するために、DBに直接保存
-                SaveToDatabaseAsync(guildId, channelId, messageId, userId, userName, "user", content).GetAwaiter().GetResult();
+                await SaveToDatabaseAsync(guildId, channelId, messageId, userId, userName, "user", content);
             }
         }
-
-        await Task.CompletedTask;
+        finally
+        {
+            _asyncLock.Release();
+        }
     }
 
     public async Task AddAssistantMessageAsync(ulong? guildId, ulong channelId, ulong messageId, string content)
     {
-        var key = GetHistoryKey(guildId, channelId);
+        var key = (guildId, channelId);
 
-        lock (_lock)
+        await _asyncLock.WaitAsync();
+        try
         {
             if (_histories.TryGetValue(key, out var history))
             {
                 TrimHistoryIfNeeded(history);
-                history.AddAssistantMessage(content);
+                var msg = new ChatMessageContent(AuthorRole.Assistant, content);
+                history.Add(msg);
+                _messageToContent[messageId] = msg;
 
-                // アシスタントメッセージも保存
-                SaveToDatabaseAsync(guildId, channelId, messageId, 0, "ChatterBot", "assistant", content).GetAwaiter().GetResult();
+                await SaveToDatabaseAsync(guildId, channelId, messageId, 0, "ChatterBot", "assistant", content);
             }
         }
-
-        await Task.CompletedTask;
+        finally
+        {
+            _asyncLock.Release();
+        }
     }
 
     public async Task UpdateUserMessageAsync(ulong messageId, string userName, string newContent)
     {
-        // DBを更新（message_idで特定）
         await UpdateInDatabaseAsync(messageId, newContent);
+
+        if (_messageToContent.TryGetValue(messageId, out var existingMsg))
+        {
+            existingMsg.Content = newContent;
+            existingMsg.AuthorName = userName;
+        }
     }
 
     public async Task DeleteUserMessageAsync(ulong messageId)
     {
-        // DBから削除（message_idで特定）
         await DeleteFromDatabaseAsync(messageId);
+
+        if (_messageToContent.TryGetValue(messageId, out var msgToRemove))
+        {
+            _messageToContent.Remove(messageId);
+
+            lock (_lock)
+            {
+                foreach (var kvp in _histories)
+                {
+                    if (kvp.Value.Remove(msgToRemove))
+                        break;
+                }
+            }
+        }
     }
 
     public async Task DeleteChannelAsync(ulong? guildId, ulong channelId)
     {
-        var key = GetHistoryKey(guildId, channelId);
+        var key = (guildId, channelId);
 
         lock (_lock)
         {
-            // メモリ上の履歴を削除
             _histories.Remove(key);
             _loadedChannels.Remove(key);
         }
 
-        // DBから削除
+        // メモリ上のメッセージ参照も削除
+        lock (_lock)
+        {
+            var messageIdsToRemove = _messageToContent
+                .Where(kvp => _histories.ContainsKey((guildId, channelId)))
+                .Select(kvp => kvp.Key)
+                .ToList();
+
+            foreach (var id in messageIdsToRemove)
+            {
+                _messageToContent.Remove(id);
+            }
+        }
+
         await DeleteChannelFromDatabaseAsync(channelId);
+    }
+
+    public async Task DeleteGuildAsync(ulong guildId)
+    {
+        var keysToRemove = _histories.Keys.Where(k => k.GuildId == guildId).ToList();
+
+        lock (_lock)
+        {
+            foreach (var key in keysToRemove)
+            {
+                _histories.Remove(key);
+                _loadedChannels.Remove(key);
+            }
+        }
+
+        // ギルドに属するメッセージ参照を削除
+        var messageIdsToRemove = _messageToContent.Keys.ToList();
+        foreach (var key in keysToRemove)
+        {
+            foreach (var msgId in messageIdsToRemove)
+            {
+                if (_messageToContent.TryGetValue(msgId, out var msg) && !_histories.Values.Any(h => h.Contains(msg)))
+                {
+                    _messageToContent.Remove(msgId);
+                }
+            }
+        }
+
+        await DeleteGuildFromDatabaseAsync(guildId);
     }
 
     private void TrimHistoryIfNeeded(ChatHistory history)
     {
         while (history.Count >= _maxMessages)
         {
+            var removed = history[0];
             history.RemoveAt(0);
+
+            // トリムされたメッセージの参照を削除
+            var messageIdToRemove = _messageToContent.FirstOrDefault(kvp => kvp.Value == removed).Key;
+            if (messageIdToRemove != 0)
+            {
+                _messageToContent.Remove(messageIdToRemove);
+            }
         }
     }
 
     public async Task LoadRecentHistoryAsync(ulong? guildId, ulong channelId, int days)
     {
-        var key = GetHistoryKey(guildId, channelId);
+        var key = (guildId, channelId);
 
         lock (_lock)
         {
             if (_loadedChannels.ContainsKey(key))
             {
-                return; // 既に読み込み済み
+                return;
             }
-            _loadedChannels[key] = true;
         }
 
         var history = GetOrCreateHistory(guildId, channelId);
@@ -210,6 +280,11 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
             {
                 history.AddAssistantMessage(content);
             }
+        }
+
+        lock (_lock)
+        {
+            _loadedChannels[key] = true;
         }
     }
 
@@ -263,8 +338,17 @@ public class ChatHistoryManager : IChatHistoryManager, IDisposable
         await command.ExecuteNonQueryAsync();
     }
 
+    private async Task DeleteGuildFromDatabaseAsync(ulong guildId)
+    {
+        var command = _connection.CreateCommand();
+        command.CommandText = "DELETE FROM chat_messages WHERE guild_id = $guildId";
+        command.Parameters.AddWithValue("$guildId", (long)guildId);
+        await command.ExecuteNonQueryAsync();
+    }
+
     public void Dispose()
     {
+        _asyncLock.Dispose();
         _connection.Dispose();
     }
 }

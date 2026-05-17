@@ -17,7 +17,7 @@ public class MathPlugin
         return a + b;
     }
 
-    [KernelFunction("subtract")]
+    // [KernelFunction("subtract")]
     [Description("2つの数値を引き算します。")]
     public double Subtract(
         [Description("引かれる数値")] double a,
@@ -35,7 +35,7 @@ public class MathPlugin
         return a * b;
     }
 
-    [KernelFunction("divide")]
+    // [KernelFunction("divide")]
     [Description("2つの数値を割り算します。")]
     public string Divide(
         [Description("割られる数値")] double a,
@@ -46,7 +46,7 @@ public class MathPlugin
         return (a / b).ToString();
     }
 
-    [KernelFunction("compare")]
+    // [KernelFunction("compare")]
     [Description("2つの数値を比較します。")]
     public string Compare(
         [Description("1つ目の数値")] double a,
@@ -57,7 +57,7 @@ public class MathPlugin
         return $"{a} = {b}";
     }
 
-    [KernelFunction("sin")]
+    // [KernelFunction("sin")]
     [Description("サイン（正弦）を計算します。引数はラジアンです。")]
     public double Sin(
         [Description("ラジアン単位の角度")] double radians)
@@ -65,7 +65,7 @@ public class MathPlugin
         return Math.Sin(radians);
     }
 
-    [KernelFunction("cos")]
+    // [KernelFunction("cos")]
     [Description("コサイン（余弦）を計算します。引数はラジアンです。")]
     public double Cos(
         [Description("ラジアン単位の角度")] double radians)
@@ -73,7 +73,7 @@ public class MathPlugin
         return Math.Cos(radians);
     }
 
-    [KernelFunction("tan")]
+    // [KernelFunction("tan")]
     [Description("タンジェント（正接）を計算します。引数はラジアンです。")]
     public string Tan(
         [Description("ラジアン単位の角度")] double radians)
@@ -84,7 +84,7 @@ public class MathPlugin
         return result.ToString();
     }
 
-    [KernelFunction("asin")]
+    // [KernelFunction("asin")]
     [Description("アークサイン（逆正弦）を計算します。結果はラジアンです。")]
     public string Asin(
         [Description("-1から1の範囲の値")] double value)
@@ -94,7 +94,7 @@ public class MathPlugin
         return Math.Asin(value).ToString();
     }
 
-    [KernelFunction("acos")]
+    // [KernelFunction("acos")]
     [Description("アークコサイン（逆余弦）を計算します。結果はラジアンです。")]
     public string Acos(
         [Description("-1から1の範囲の値")] double value)
@@ -104,7 +104,7 @@ public class MathPlugin
         return Math.Acos(value).ToString();
     }
 
-    [KernelFunction("atan")]
+    // [KernelFunction("atan")]
     [Description("アークタンジェント（逆正接）を計算します。結果はラジアンです。")]
     public double Atan(
         [Description("任意の実数値")] double value)
@@ -112,7 +112,7 @@ public class MathPlugin
         return Math.Atan(value);
     }
 
-    [KernelFunction("atan2")]
+    // [KernelFunction("atan2")]
     [Description("y/xのアークタンジェントを計算します。象限も考慮されます。結果はラジアンです。")]
     public double Atan2(
         [Description("y座標")] double y,
@@ -131,7 +131,7 @@ public class MathPlugin
         return Math.Sqrt(value).ToString();
     }
 
-    [KernelFunction("pow")]
+    // [KernelFunction("pow")]
     [Description("べき乗を計算します。aのb乗を返します。")]
     public double Pow(
         [Description("底")] double a,
@@ -140,7 +140,7 @@ public class MathPlugin
         return Math.Pow(a, b);
     }
 
-    [KernelFunction("log")]
+    // [KernelFunction("log")]
     [Description("対数を計算します。デフォルトは自然対数です。")]
     public string Log(
         [Description("真数（正の値）")] double value,
@@ -158,7 +158,7 @@ public class MathPlugin
         return Math.Log(value, baseValue.Value).ToString();
     }
 
-    [KernelFunction("abs")]
+    // [KernelFunction("abs")]
     [Description("絶対値を計算します。")]
     public double Abs(
         [Description("数値")] double value)
@@ -166,7 +166,7 @@ public class MathPlugin
         return Math.Abs(value);
     }
 
-    [KernelFunction("round")]
+    // [KernelFunction("round")]
     [Description("四捨五入します。")]
     public double Round(
         [Description("数値")] double value,
@@ -175,7 +175,7 @@ public class MathPlugin
         return Math.Round(value, decimals);
     }
 
-    [KernelFunction("floor")]
+    // [KernelFunction("floor")]
     [Description("切り捨てます。")]
     public double Floor(
         [Description("数値")] double value)
@@ -183,7 +183,7 @@ public class MathPlugin
         return Math.Floor(value);
     }
 
-    [KernelFunction("ceil")]
+    // [KernelFunction("ceil")]
     [Description("切り上げます。")]
     public double Ceil(
         [Description("数値")] double value)
@@ -191,14 +191,14 @@ public class MathPlugin
         return Math.Ceiling(value);
     }
 
-    [KernelFunction("pi")]
+    // [KernelFunction("pi")]
     [Description("円周率を返します。")]
     public double Pi()
     {
         return Math.PI;
     }
 
-    [KernelFunction("e")]
+    // [KernelFunction("e")]
     [Description("ネイピア数（自然対数の底）を返します。")]
     public double E()
     {

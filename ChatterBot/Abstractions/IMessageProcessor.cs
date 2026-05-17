@@ -10,5 +10,5 @@ public interface IMessageProcessor
     /// <summary>
     /// メッセージを処理し、返信するかどうかを判断する
     /// </summary>
-    Task<ProcessResult> ProcessAsync(string content, MessageContext context);
+    Task<ProcessResult> ProcessAsync(string content, MessageContext context, CancellationToken cancellationToken = default);
 }
