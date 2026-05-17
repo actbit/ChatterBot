@@ -68,7 +68,7 @@ public class UrlReaderPlugin
         }
     }
 
-    [KernelFunction("extract_urls")]
+    // [KernelFunction("extract_urls")]
     [Description("テキストからURLを抽出します。")]
     public string ExtractUrls(
         [Description("URLを抽出するテキスト")] string text)

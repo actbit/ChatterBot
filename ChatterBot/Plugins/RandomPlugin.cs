@@ -10,7 +10,7 @@ public class RandomPlugin
 {
     private readonly Random _random = new();
 
-    [KernelFunction("random")]
+    // [KernelFunction("random")]
     [Description("指定範囲のランダムな整数を生成します。")]
     public int Random(
         [Description("最小値（含む）")] int min,
@@ -19,7 +19,7 @@ public class RandomPlugin
         return _random.Next(min, max + 1);
     }
 
-    [KernelFunction("random_float")]
+    // [KernelFunction("random_float")]
     [Description("0.0以上1.0未満のランダムな浮動小数点数を生成します。")]
     public double RandomFloat()
     {
@@ -76,7 +76,7 @@ public class RandomPlugin
         return items[_random.Next(items.Length)];
     }
 
-    [KernelFunction("shuffle")]
+    // [KernelFunction("shuffle")]
     [Description("リストをシャッフルします。")]
     public string Shuffle(
         [Description("アイテム（カンマ区切り）")] string items)

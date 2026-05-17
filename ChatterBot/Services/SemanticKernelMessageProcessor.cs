@@ -17,9 +17,11 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
     private readonly IChatHistoryManager _historyManager;
     private readonly IRagHistoryStore _ragStore;
     private readonly ImageReaderPlugin? _imageReaderPlugin;
+    private readonly UrlReaderPlugin _urlReaderPlugin;
     private readonly IReadOnlyList<Type> _externalPluginTypes;
     private readonly string _systemPrompt;
     private readonly int _defaultLoadDays;
+    private readonly int _maxTokens;
     private readonly bool _supportsVision;
     private readonly ILogger<SemanticKernelMessageProcessor> _logger;
 
@@ -31,8 +33,10 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
         int defaultLoadDays,
         bool supportsVision,
         ILogger<SemanticKernelMessageProcessor> logger,
+        UrlReaderPlugin urlReaderPlugin,
         ImageReaderPlugin? imageReaderPlugin = null,
-        IReadOnlyList<Type>? externalPluginTypes = null)
+        IReadOnlyList<Type>? externalPluginTypes = null,
+        int maxTokens = 4096)
     {
         _kernel = kernel;
         _chatCompletion = kernel.GetRequiredService<IChatCompletionService>();
@@ -42,11 +46,13 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
         _defaultLoadDays = defaultLoadDays;
         _supportsVision = supportsVision;
         _logger = logger;
+        _urlReaderPlugin = urlReaderPlugin;
         _imageReaderPlugin = imageReaderPlugin;
         _externalPluginTypes = externalPluginTypes ?? Array.Empty<Type>();
+        _maxTokens = maxTokens;
     }
 
-    public async Task<ProcessResult> ProcessAsync(string content, MessageContext context)
+    public async Task<ProcessResult> ProcessAsync(string content, MessageContext context, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -66,21 +72,20 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
             // 返信判断用のTaskCompletionSource
             var decisionSource = new TaskCompletionSource<ReplyDecision>();
 
-            // プラグイン用のKernelを構築（元のKernelをベースに）
-            var pluginKernel = _kernel;
+            // プラグイン用のKernelをクローン（蓄積回避）
+            var pluginKernel = _kernel.Clone();
 
             // プラグインをインスタンス化して登録
             var replyPlugin = new ReplyPlugin(decisionSource);
             var historySearchPlugin = new HistorySearchPlugin(_ragStore, context.GuildId, context.ChannelId, context.IsChannelPublic, context.MemberIds);
             var timePlugin = new TimePlugin();
-            var urlReaderPlugin = new UrlReaderPlugin();
             var mathPlugin = new MathPlugin();
             var randomPlugin = new RandomPlugin();
 
             pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(replyPlugin, "ReplyPlugin"));
             pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(historySearchPlugin, "HistorySearchPlugin"));
             pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(timePlugin, "TimePlugin"));
-            pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(urlReaderPlugin, "UrlReaderPlugin"));
+            pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(_urlReaderPlugin, "UrlReaderPlugin"));
             pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(mathPlugin, "MathPlugin"));
             pluginKernel.Plugins.Add(KernelPluginFactory.CreateFromObject(randomPlugin, "RandomPlugin"));
 
@@ -108,13 +113,21 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
             var fullHistory = new ChatHistory();
             fullHistory.AddSystemMessage(_systemPrompt);
 
-            foreach (var message in chatHistory)
+            // 画像がある場合は最後のユーザーメッセージをスキップ（Vision用メッセージで置き換えるため）
+            var hasImages = context.ImageUrls.Count > 0;
+            var messagesToCopy = chatHistory.ToList();
+            if (hasImages && messagesToCopy.Count > 0 && messagesToCopy[^1].Role == AuthorRole.User)
+            {
+                messagesToCopy.RemoveAt(messagesToCopy.Count - 1);
+            }
+
+            foreach (var message in messagesToCopy)
             {
                 fullHistory.Add(message);
             }
 
             // 画像がある場合の処理
-            if (context.ImageUrls.Count > 0)
+            if (hasImages)
             {
                 if (_supportsVision)
                 {
@@ -151,37 +164,37 @@ public class SemanticKernelMessageProcessor : IMessageProcessor
                 // Vision非対応 + Vision設定なし: 画像を完全に無視
             }
 
-            // OpenAIPromptExecutionSettingsを設定（AutoでFunction Callingを有効化）
+            // Function Callingを必須化（reply/do_not_replyを確実に呼ばせる）
             var executionSettings = new OpenAIPromptExecutionSettings
             {
-                FunctionChoiceBehavior = FunctionChoiceBehavior.Auto()
+                FunctionChoiceBehavior = FunctionChoiceBehavior.Required(),
+                MaxTokens = _maxTokens
             };
 
             _logger.LogInformation("Processing message from {UserName}: {Content}", context.UserName, content);
 
-            // AIに送信してFunction Callingを実行
             var result = await _chatCompletion.GetChatMessageContentAsync(
                 fullHistory,
                 executionSettings,
-                pluginKernel);
+                pluginKernel,
+                cancellationToken);
 
-            _logger.LogInformation("AI Response: {Result}", result.Content ?? "Function called");
+            _logger.LogDebug("AI Response: {Result}", result.Content ?? "Function called");
 
-            // 返信判断を待つ（タイムアウト付き）
-            var completedTask = await Task.WhenAny(
-                decisionSource.Task,
-                Task.Delay(TimeSpan.FromSeconds(30))
-            );
-
-            if (completedTask != decisionSource.Task)
+            if (decisionSource.Task.IsCompleted)
             {
-                _logger.LogWarning("Timeout waiting for reply decision");
-                return new ProcessResult(false, null);
+                var decision = await decisionSource.Task;
+                _logger.LogInformation("Reply decision: {Decision}", decision.ShouldReply ? "YES" : "NO (do_not_reply)");
+                return new ProcessResult(decision.ShouldReply, decision.Content);
             }
 
-            var decision = await decisionSource.Task;
-
-            return new ProcessResult(decision.ShouldReply, decision.Content);
+            _logger.LogWarning("No reply decision made despite Required() function calling");
+            return new ProcessResult(false, null);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("Message processing was cancelled");
+            return new ProcessResult(false, null);
         }
         catch (Exception ex)
         {
